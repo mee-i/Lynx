@@ -27,14 +27,14 @@ const handleSignIn = async () => {
                 onResponse: async (context) => {
                     isLoading.value = false
                     if (!context.response.ok) {
-                        error.value = await context.response.text() || 'Invalid credentials'
+                        error.value = (await context.response.json()).message || 'Invalid credentials'
                     }
                 }
             }
         })
     } catch (e) {
         isLoading.value = false
-        error.value = 'An error occurred during sign in'
+        error.value = 'Invalid credentials'
     }
 }
 </script>
@@ -48,23 +48,23 @@ const handleSignIn = async () => {
             </div>
 
             <UCard>
-                <form @submit.prevent="handleSignIn" class="space-y-4">
-                    <UFormGroup label="Email" name="email">
+                <UForm @submit.prevent="handleSignIn" class="space-y-4">
+                    <UFormField label="Email" name="email">
                         <UInput 
                             v-model="email" 
                             type="email" 
                             placeholder="admin@localhost"
                             autofocus
                         />
-                    </UFormGroup>
+                    </UFormField>
 
-                    <UFormGroup label="Password" name="password">
+                    <UFormField label="Password" name="password">
                         <UInput 
                             v-model="password" 
                             type="password" 
                             placeholder="Current password"
                         />
-                    </UFormGroup>
+                    </UFormField>
 
                     <UAlert
                         v-if="error"
@@ -83,7 +83,7 @@ const handleSignIn = async () => {
                     >
                         Sign In
                     </UButton>
-                </form>
+                </UForm>
             </UCard>
         </div>
     </div>
