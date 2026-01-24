@@ -1,25 +1,42 @@
 <script setup lang="ts">
 import { authClient } from "@/utils/auth-client";
-const session = authClient.useSession();
-const loggedIn = computed(() => !!session.value?.data);
+
+const email = ref('')
+const password = ref('')
+const isLoading = ref(false)
+const error = ref('')
 
 const route = useRoute();
 const callbackURL = route.query.callbackUrl as string || '/dashboard';
 
-watchEffect(() => {
-    if (loggedIn.value) {
-        navigateTo('/dashboard');
+const handleSignIn = async () => {
+    if (!email.value || !password.value) {
+        error.value = 'Please fill in all fields'
+        return
     }
-});
 
-const handleSignIn = async (provider: 'google' | 'github') => {
-    await authClient.signIn.social({
-        provider,
-        callbackURL
-    })
+    isLoading.value = true
+    error.value = ''
+
+    try {
+        await authClient.signIn.email({
+            email: email.value,
+            password: password.value,
+            callbackURL,
+            fetchOptions: {
+                onResponse: async (context) => {
+                    isLoading.value = false
+                    if (!context.response.ok) {
+                        error.value = await context.response.text() || 'Invalid credentials'
+                    }
+                }
+            }
+        })
+    } catch (e) {
+        isLoading.value = false
+        error.value = 'An error occurred during sign in'
+    }
 }
-
-const colorMode = useColorMode()
 </script>
 
 <template>
@@ -31,33 +48,43 @@ const colorMode = useColorMode()
             </div>
 
             <UCard>
-                <div class="space-y-3">
-                    <UButton 
-                        block 
-                        size="lg" 
-                        variant="outline" 
-                        @click="handleSignIn('google')"
-                    >
-                        <UIcon name="i-simple-icons-google" class="w-5 h-5 mr-2" />
-                        Continue with Google
-                    </UButton>
+                <form @submit.prevent="handleSignIn" class="space-y-4">
+                    <UFormGroup label="Email" name="email">
+                        <UInput 
+                            v-model="email" 
+                            type="email" 
+                            placeholder="admin@localhost"
+                            autofocus
+                        />
+                    </UFormGroup>
+
+                    <UFormGroup label="Password" name="password">
+                        <UInput 
+                            v-model="password" 
+                            type="password" 
+                            placeholder="Current password"
+                        />
+                    </UFormGroup>
+
+                    <UAlert
+                        v-if="error"
+                        icon="i-heroicons-exclamation-triangle"
+                        color="red"
+                        variant="subtle"
+                        :title="error"
+                        class="mb-4"
+                    />
 
                     <UButton 
+                        type="submit"
                         block 
                         size="lg" 
-                        variant="outline" 
-                        @click="handleSignIn('github')"
+                        :loading="isLoading"
                     >
-                        <UIcon name="i-simple-icons-github" class="w-5 h-5 mr-2" />
-                        Continue with GitHub
+                        Sign In
                     </UButton>
-                </div>
+                </form>
             </UCard>
-
-            <!-- Dark Mode Toggle -->
-            <div class="mt-8 flex justify-center">
-                <UColorModeSwitch />
-            </div>
         </div>
     </div>
 </template>
