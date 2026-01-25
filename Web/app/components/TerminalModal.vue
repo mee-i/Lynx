@@ -26,7 +26,7 @@ function connect() {
 
     status.value = "connecting";
     const clientId = `web-${Math.random().toString(36).substr(2, 9)}`;
-    ws.value = new WebSocket(`wss://${useRuntimeConfig().public.base_url}/lynx/?type=client&id=${clientId}`);
+    ws.value = new WebSocket(`wss://${useRuntimeConfig().public.websocket_url}/ws/?type=client&id=${clientId}`);
 
     ws.value.onopen = () => {
         status.value = "connected";

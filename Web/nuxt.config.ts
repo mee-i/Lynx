@@ -16,6 +16,7 @@ export default defineNuxtConfig({
     runtimeConfig: {
         public: {
             base_url: process.env.BASE_URL || "localhost:3000",
+            websocket_url: process.env.WEBSOCKET_URL || "localhost:9991",
         },
     },
     nitro: {
