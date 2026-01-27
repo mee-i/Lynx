@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 
 async function main() {
     // Generate a secure random password
-    const password = randomBytes(12).toString('hex');
+    const password = "test@123";
     const email = "admin@example.com";
     const name = "Admin";
 

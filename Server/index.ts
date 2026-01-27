@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import type { ServerWebSocket } from "bun";
+import { readdir } from "node:fs/promises";
 
 const devices = new Map<string, ServerWebSocket<WebSocketData>>();
 const clients = new Map<string, ServerWebSocket<WebSocketData>>();
@@ -19,7 +20,7 @@ type WebSocketData = {
 
 const server = serve<WebSocketData>({
     port: 9991,
-    fetch(req, server) {
+    async fetch(req, server) {
         const url = new URL(req.url);
 
         if (url.pathname === "/api/devices" && req.method === "GET") {
@@ -33,6 +34,24 @@ const server = serve<WebSocketData>({
         }
 
         if (url.pathname.startsWith("/api/devices/") && req.method === "GET") {
+            const parts = url.pathname.split("/");
+            if (parts.length === 5 && parts[4] === "screenshots") {
+                // List screenshots: /api/devices/{id}/screenshots
+                const deviceId = parts[3];
+                const imagesDir = `images/${deviceId}`;
+                try {
+                    const files = await readdir(imagesDir);
+                    const screenshots = files.filter((f: string) => f.endsWith(".png")).sort().reverse(); 
+                    return new Response(JSON.stringify(screenshots), {
+                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    });
+                } catch {
+                     return new Response(JSON.stringify([]), {
+                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    });
+                }
+            }
+
             const id = url.pathname.split("/").pop();
             const device = deviceRegistry.get(id || "");
             if (!device) {
@@ -47,6 +66,16 @@ const server = serve<WebSocketData>({
                     "Access-Control-Allow-Origin": "*",
                 },
             });
+        }
+
+        // Static file serving for images
+        if (url.pathname.startsWith("/images/") && req.method === "GET") {
+            const filePath = `.${url.pathname}`;
+            const file = Bun.file(filePath);
+            if (await file.exists()) {
+                return new Response(file);
+            }
+            return new Response("Not found", { status: 404 });
         }
 
         if (req.method === "OPTIONS") {
@@ -106,7 +135,7 @@ const server = serve<WebSocketData>({
                 clients.set(id, ws);
             }
         },
-        message(ws, message) {
+        async message(ws, message) {
             const { type, id } = ws.data;
 
             console.log(`[${type}] received message: ${message}`);
@@ -176,7 +205,7 @@ const server = serve<WebSocketData>({
                                 }),
                             );
                         }
-                    } else if (msg.type === "input" || msg.type === "resize") {
+                    } else if (msg.type === "input" || msg.type === "resize" || msg.type === "action") {
                         // Relay input and resize events to the device
                         const targetDeviceId = ws.data.deviceId;
                         if (targetDeviceId) {
@@ -239,6 +268,23 @@ const server = serve<WebSocketData>({
                         if (device) {
                             device.lastSeen = new Date();
                         }
+                    } else if (msg.type === "screenshot" && msg.data) {
+                         const buffer = Buffer.from(msg.data, "base64");
+                         const timestamp = Date.now();
+                         const dir = `images/${id}`;
+                         await Bun.write(`${dir}/${timestamp}.png`, buffer);
+                         console.log(`[Screenshot] Saved ${dir}/${timestamp}.png`);
+
+                         const subs = subscriptions.get(id);
+                         if (subs) {
+                            subs.forEach(client => 
+                                client.send(JSON.stringify({
+                                    type: "screenshot_saved",
+                                    url: `/images/${id}/${timestamp}.png`,
+                                    filename: `${timestamp}.png`
+                                }))
+                            );
+                         }
                     }
                 }
             } catch (err) {

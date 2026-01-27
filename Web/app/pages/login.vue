@@ -1,22 +1,22 @@
 <script setup lang="ts">
 import { authClient } from "@/utils/auth-client";
 
-const email = ref('')
-const password = ref('')
-const isLoading = ref(false)
-const error = ref('')
+const email = ref("");
+const password = ref("");
+const isLoading = ref(false);
+const error = ref("");
 
 const route = useRoute();
-const callbackURL = route.query.callbackUrl as string || '/dashboard';
+const callbackURL = (route.query.callbackUrl as string) || "/dashboard";
 
 const handleSignIn = async () => {
     if (!email.value || !password.value) {
-        error.value = 'Please fill in all fields'
-        return
+        error.value = "Please fill in all fields";
+        return;
     }
 
-    isLoading.value = true
-    error.value = ''
+    isLoading.value = true;
+    error.value = "";
 
     try {
         await authClient.signIn.email({
@@ -25,62 +25,63 @@ const handleSignIn = async () => {
             callbackURL,
             fetchOptions: {
                 onResponse: async (context) => {
-                    isLoading.value = false
+                    isLoading.value = false;
                     if (!context.response.ok) {
-                        error.value = (await context.response.json()).message || 'Invalid credentials'
+                        error.value =
+                            (await context.response.json()).message ||
+                            "Invalid credentials";
                     }
-                }
-            }
-        })
+                },
+            },
+        });
     } catch (e) {
-        isLoading.value = false
-        error.value = 'Invalid credentials'
+        isLoading.value = false;
+        error.value = "Invalid credentials";
     }
-}
+};
 </script>
 
 <template>
     <div class="min-h-screen bg-default flex items-center justify-center px-6">
         <div class="w-full max-w-sm">
             <div class="text-center mb-8">
-                <h1 class="text-2xl font-bold text-highlighted">Welcome to <span class="text-primary">Lynx</span></h1>
+                <h1 class="text-2xl font-bold text-highlighted">
+                    Welcome to <span class="text-primary">Lynx</span>
+                </h1>
                 <p class="text-muted mt-1">Sign in to access your devices</p>
             </div>
 
             <UCard>
-                <UForm @submit.prevent="handleSignIn" class="space-y-4">
-                    <UFormField label="Email" name="email">
-                        <UInput 
-                            v-model="email" 
-                            type="email" 
+                <UForm @submit.prevent="handleSignIn" class="space-y-4 w-full">
+                    <UFormField label="Email" name="email" class="w-full">
+                        <UInput
+                            v-model="email"
+                            type="email"
                             placeholder="admin@localhost"
+                            class="w-full"
                             autofocus
                         />
                     </UFormField>
 
-                    <UFormField label="Password" name="password">
-                        <UInput 
-                            v-model="password" 
-                            type="password" 
+                    <UFormField label="Password" name="password" class="w-full">
+                        <UInput
+                            v-model="password"
+                            type="password"
                             placeholder="Current password"
+                            class="w-full"
                         />
                     </UFormField>
 
                     <UAlert
                         v-if="error"
                         icon="i-heroicons-exclamation-triangle"
-                        color="red"
-                        variant="subtle"
+                        color="error"
+                        variant="outline"
                         :title="error"
                         class="mb-4"
                     />
 
-                    <UButton 
-                        type="submit"
-                        block 
-                        size="lg" 
-                        :loading="isLoading"
-                    >
+                    <UButton type="submit" block size="lg" :loading="isLoading">
                         Sign In
                     </UButton>
                 </UForm>

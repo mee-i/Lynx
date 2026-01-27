@@ -123,6 +123,15 @@ onMounted(() => {
                         >
                             Terminal
                         </UButton>
+                        <UButton
+                            size="xs"
+                            color="neutral"
+                            variant="solid"
+                            icon="i-lucide-info"
+                            :to="`/dashboard/devices/${row.original.id}`"
+                        >
+                            Info
+                        </UButton>
                         <UModal>
                             <UButton
                                 size="xs"
