@@ -98,6 +98,9 @@ export const devices = sqliteTable("device", {
     .default("offline")
     .notNull(),
   lastSeen: integer("last_seen", { mode: "timestamp_ms" }),
+  group: text("group"),
+  os: text("os"),
+  version: text("version"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
     .notNull(),

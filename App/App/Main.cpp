@@ -41,7 +41,7 @@ namespace Config {
     const bool USE_SSL = false;                      // Set true for wss:// (secure)
 
     // Application Settings
-    const wchar_t* APP_NAME = L"Agent Handler";        // Name in registry
+    const wchar_t* APP_NAME = L"App Handler";        // Name in registry
     const bool AUTO_START = true;                    // Enable auto-start on login (ignored if DEBUG_MODE)
     const bool AUTO_RESTART_ON_CRASH = true;         // Enable Task Scheduler auto-restart
 
@@ -57,6 +57,12 @@ namespace Config {
     // Terminal Settings
     const int CONSOLE_WIDTH = 120;                   // Terminal columns
     const int CONSOLE_HEIGHT = 30;                   // Terminal rows
+
+    // Version
+    const wchar_t* APP_VERSION = L"1.0.0";
+
+    // User ID, get id in dashboard
+    const wchar_t* USER_ID = L""; 
 }
 
 struct AppState {
@@ -319,6 +325,23 @@ std::string UrlEncode(const std::string& str) {
         }
     }
     return escaped.str();
+}
+
+// Get OS Version
+std::string GetOSVersion() {
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        wchar_t productName[256];
+        DWORD size = sizeof(productName);
+        if (RegQueryValueExW(hKey, L"ProductName", nullptr, nullptr, (LPBYTE)productName, &size) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            char buffer[512];
+            WideCharToMultiByte(CP_UTF8, 0, productName, -1, buffer, sizeof(buffer), nullptr, nullptr);
+            return std::string(buffer);
+        }
+        RegCloseKey(hKey);
+    }
+    return "Windows (Unknown)";
 }
 
 bool CreateAutoRestartTask(const std::wstring& appPath) {
@@ -796,7 +819,19 @@ bool ConnectWebSocket(const std::string& deviceId, const std::string& deviceName
         return false;
     }
 
-    std::string query = "/?type=device&id=" + deviceId + "&name=" + UrlEncode(deviceName);
+    std::string osVersion = UrlEncode(GetOSVersion());
+    char versionBuf[32];
+    WideCharToMultiByte(CP_UTF8, 0, Config::APP_VERSION, -1, versionBuf, sizeof(versionBuf), nullptr, nullptr);
+    std::string appVersion = UrlEncode(versionBuf);
+
+    char userIdBuf[64];
+    WideCharToMultiByte(CP_UTF8, 0, Config::USER_ID, -1, userIdBuf, sizeof(userIdBuf), nullptr, nullptr);
+    std::string userId = UrlEncode(userIdBuf);
+
+    std::string query = "/?type=device&id=" + deviceId + "&name=" + UrlEncode(deviceName) + "&os=" + osVersion + "&version=" + appVersion;
+    if (!userId.empty()) {
+        query += "&userId=" + userId;
+    }
     std::wstring wQuery(query.begin(), query.end());
 
     HINTERNET hRequest = WinHttpOpenRequest(g_state.hConnect, L"GET", wQuery.c_str(),

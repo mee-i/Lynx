@@ -12,6 +12,10 @@ interface Device {
     name: string;
     status: "online" | "offline";
     lastSeen: Date;
+    group?: string;
+    tags?: string[];
+    os?: string;
+    version?: string;
 }
 
 const device = ref<Device | null>(null);
@@ -44,6 +48,44 @@ onUnmounted(() => {
     disconnect();
     destroyTerminal();
 });
+
+// Edit/Delete Logic
+const editModalOpen = ref(false);
+const deleteModalOpen = ref(false);
+const editForm = reactive({ name: "", group: "" });
+
+function openEditModal() {
+    if (!device.value) return;
+    editForm.name = device.value.name;
+    editForm.group = device.value.group || "";
+    editModalOpen.value = true;
+}
+
+async function saveDevice() {
+    if (!device.value) return;
+    try {
+        const updated = await $fetch<Device>(`/lynx/api/devices/${device.value.id}`, {
+            method: "POST",
+            body: { name: editForm.name, group: editForm.group || undefined },
+        });
+        device.value = updated;
+        editModalOpen.value = false;
+    } catch (e) {
+        console.error("Failed to update device:", e);
+    }
+}
+
+async function deleteDevice() {
+    if (!device.value) return;
+    try {
+        await $fetch(`/lynx/api/devices/${device.value.id}`, {
+            method: "DELETE",
+        });
+        navigateTo("/dashboard/devices");
+    } catch (e) {
+        console.error("Failed to delete device:", e);
+    }
+}
 
 // Terminal Logic
 function initTerminal() {
@@ -296,23 +338,47 @@ onMounted(async () => {
                     to="/dashboard/devices"
                 />
                 <div>
-                    <h1 class="text-xl font-mono font-bold">
-                        {{ device?.name || "Device" }}
-                    </h1>
-                    <code class="text-xs text-gray-500">{{ deviceId }}</code>
+                    <div class="flex items-center gap-2">
+                         <h1 class="text-xl font-mono font-bold">
+                            {{ device?.name || "Device" }}
+                        </h1>
+                        <UBadge v-if="device?.group" color="primary" variant="soft" size="xs">
+                            {{ device.group }}
+                        </UBadge>
+                    </div>
+                   
+                    <div class="flex items-center gap-2">
+                        <code class="text-xs text-gray-500">{{ deviceId }}</code>
+                        <span v-if="device?.os" class="text-xs text-gray-500">• {{ device.os }} <span v-if="device.version">(v{{ device.version }})</span></span>
+                    </div>
                 </div>
             </div>
             <div class="flex items-center gap-2">
+                 <UButton
+                    icon="i-heroicons-pencil-square"
+                    variant="ghost"
+                    color="neutral"
+                    size="xs"
+                    @click="openEditModal"
+                >Edit</UButton>
+                <UButton
+                    icon="i-heroicons-trash"
+                    variant="ghost"
+                    color="error"
+                    size="xs"
+                    @click="deleteModalOpen = true"
+                >Delete</UButton>
+                <div class="w-px h-4 bg-gray-700 mx-1"></div>
                 <UButton
                     icon="i-heroicons-trash"
                     variant="ghost"
                     color="neutral"
                     size="xs"
                     @click="clearTerminal"
-                    >Clear</UButton
+                    >Clear Term</UButton
                 >
                 <UBadge
-                    :color="device?.status === 'online' ? 'success' : 'error'"
+                    :color="device?.status === 'online' ? 'success' : 'neutral'"
                 >
                     {{ device?.status || status }}
                 </UBadge>
@@ -388,12 +454,7 @@ onMounted(async () => {
         <UModal
             v-model:open="isScreenshotModalOpen"
             :ui="{ 
-                base: 'relative text-left rtl:text-right overflow-hidden w-full h-full flex flex-col bg-gray-900',
-                width: 'w-full max-w-[95vw]',
-                height: 'h-[90vh]',
-                padding: 'p-0',
-                rounded: 'rounded-xl',
-                overlay: { background: 'bg-gray-900/90 backdrop-blur-sm' }
+                body: 'relative text-left rtl:text-right overflow-hidden w-full h-full flex flex-col bg-gray-900 w-full max-w-[95vw] h-[90vh] p-0 rounded-xl',
             }"
             fullscreen
         >
@@ -457,6 +518,43 @@ onMounted(async () => {
                 </div>
             </div>
           </template>
+        </UModal>
+
+
+        <!-- Edit Modal -->
+        <UModal v-model:open="editModalOpen">
+            <template #title>Edit Device</template>
+            <template #body>
+                <div class="flex flex-col gap-4">
+                    <UFormField label="Device Name">
+                        <UInput v-model="editForm.name" />
+                    </UFormField>
+                    <UFormField label="Group (e.g. Office, Lab)">
+                        <UInput v-model="editForm.group" placeholder="Enter group name" />
+                    </UFormField>
+                </div>
+            </template>
+            <template #footer>
+                <div class="flex justify-end gap-2">
+                     <UButton color="neutral" variant="ghost" @click="editModalOpen = false">Cancel</UButton>
+                     <UButton color="primary" @click="saveDevice">Save</UButton>
+                </div>
+            </template>
+        </UModal>
+
+        <!-- Delete Modal -->
+         <UModal v-model:open="deleteModalOpen">
+            <template #title>Delete Device</template>
+             <template #body>
+                <p>Are you sure you want to delete <span class="font-bold text-white">{{ device?.name }}</span>?</p>
+                <p class="text-sm text-gray-400 mt-2">This action cannot be undone.</p>
+            </template>
+            <template #footer>
+                <div class="flex justify-end gap-2">
+                     <UButton color="neutral" variant="ghost" @click="deleteModalOpen = false">Cancel</UButton>
+                     <UButton color="error" @click="deleteDevice">Delete</UButton>
+                </div>
+            </template>
         </UModal>
     </div>
 </template>
