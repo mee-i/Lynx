@@ -47,6 +47,13 @@ function connect() {
                 terminal.value?.write(msg.output);
             } else if (msg.type === "status") {
                 terminal.value?.writeln(`\x1b[33m>>> Device is now ${msg.status}\x1b[0m`);
+                if (msg.status == "online") {
+                    ws.value?.send(
+                        JSON.stringify({
+                            type: "hello",
+                        })
+                    );
+                }
             } else if (msg.type === "error") {
                 terminal.value?.writeln(`\x1b[31m>>> Error: ${msg.message}\x1b[0m`);
             }

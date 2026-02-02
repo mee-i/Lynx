@@ -97,6 +97,37 @@ type WebSocketData = {
     userId?: string;
 };
 
+const welcomingMessage = {
+type: "input",
+data:
+    `@echo off & cls & echo. & echo. & echo. & echo. & ` +
+    `echo          M                       LM          & ` +
+    `echo          MML                    MMM          & ` +
+    `echo          MNMML                MMOUM          & ` +
+    `echo          MW UMM             LMN  VM          & ` +
+    `echo          MR   NMM         MMMZ   RM          & ` +
+    `echo          MPZ  UMMMMMMMMMMMMMMMN  OM          & ` +
+    `echo          MMMMMMMMMMMMMMMMMMMMMMMOMM          & ` +
+    `echo          MO TMMMMMMMMMMMMMMMMMM  OM          & ` +
+    `echo          MO  ZMMMMMMMMMMMMMMMM   OM          & ` +
+    `echo          MO  ZNMMMMMMMMMMMMMMM   OM          & ` +
+    `echo          MOZ OMMMMMMMMMMMMMMMMMX OL          & ` +
+    `echo          NOUMMMMMMMMMMMMMMMMMMMMMMM          & ` +
+    `echo           MMMMMMMMMMMMMMMMMMMMMMMM           & ` +
+    `echo            MMMMMMMMMMMMMMMMMMMMMM            & ` +
+    `echo             MMMMMMMMMMMMMMMMMMMM             & ` +
+    `echo               MMMMMMMMMMMMMMMM               & ` +
+    `echo                  MMMMMMMMMM                  & ` +
+    `echo. & echo. & echo. & ` +
+    `echo ============================================ & ` +
+    `echo                     Lynx & ` +
+    `echo ============================================ & ` +
+    `echo   Status    : Connected & ` +
+    `echo. & ` +
+    `echo   Type 'help' to list available commands & ` +
+    `echo ============================================ & ` +
+    `echo on\r`,
+}
 const server = serve<WebSocketData>({
     port: 9991,
     async fetch(req, server) {
@@ -351,38 +382,7 @@ const server = serve<WebSocketData>({
                             const deviceWs = deviceSockets.get(targetDeviceId);
                             if (deviceWs) {
                                 deviceWs.send(
-                                    JSON.stringify({
-                                        type: "input",
-                                        data:
-                                            `@echo off & cls & echo. & echo. & echo. & echo. & ` +
-                                            `echo          M                       LM          & ` +
-                                            `echo          MML                    MMM          & ` +
-                                            `echo          MNMML                MMOUM          & ` +
-                                            `echo          MW UMM             LMN  VM          & ` +
-                                            `echo          MR   NMM         MMMZ   RM          & ` +
-                                            `echo          MPZ  UMMMMMMMMMMMMMMMN  OM          & ` +
-                                            `echo          MMMMMMMMMMMMMMMMMMMMMMMOMM          & ` +
-                                            `echo          MO TMMMMMMMMMMMMMMMMMM  OM          & ` +
-                                            `echo          MO  ZMMMMMMMMMMMMMMMM   OM          & ` +
-                                            `echo          MO  ZNMMMMMMMMMMMMMMM   OM          & ` +
-                                            `echo          MOZ OMMMMMMMMMMMMMMMMMX OL          & ` +
-                                            `echo          NOUMMMMMMMMMMMMMMMMMMMMMMM          & ` +
-                                            `echo           MMMMMMMMMMMMMMMMMMMMMMMM           & ` +
-                                            `echo            MMMMMMMMMMMMMMMMMMMMMM            & ` +
-                                            `echo             MMMMMMMMMMMMMMMMMMMM             & ` +
-                                            `echo               MMMMMMMMMMMMMMMM               & ` +
-                                            `echo                  MMMMMMMMMM                  & ` +
-                                            `echo. & echo. & echo. & ` +
-                                            `echo ============================================ & ` +
-                                            `echo                     Lynx & ` +
-                                            `echo ============================================ & ` +
-                                            `echo   Status    : Connected & ` +
-                                            `echo   Device ID : ${targetDeviceId} & ` +
-                                            `echo. & ` +
-                                            `echo   Type 'help' to list available commands & ` +
-                                            `echo ============================================ & ` +
-                                            `echo on\r`,
-                                    }),
+                                    JSON.stringify(welcomingMessage),
                                 );
                             }
                         }
@@ -392,6 +392,14 @@ const server = serve<WebSocketData>({
                             const deviceWs = deviceSockets.get(targetDeviceId);
                             if (deviceWs) {
                                 deviceWs.send(JSON.stringify(msg));
+                            }
+                        }
+                    } else if (msg.type === "hello") {
+                        const targetDeviceId = ws.data.deviceId;
+                        if (targetDeviceId) {
+                            const deviceWs = deviceSockets.get(targetDeviceId);
+                            if (deviceWs) {
+                                deviceWs.send(JSON.stringify(welcomingMessage));
                             }
                         }
                     }
