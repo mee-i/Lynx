@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import type { TableColumn, TabsItem } from "@nuxt/ui";
+import { formatRelativeTime } from "~/utils/formatters";
 import "@xterm/xterm/css/xterm.css";
 import { card } from "#build/ui";
 
@@ -18,9 +20,85 @@ interface Device {
     version?: string;
 }
 
+interface DeviceLog {
+    id: number;
+    type: "connect" | "disconnect" | "reconnect";
+    timestamp: string | Date;
+    message?: string;
+}
+
 const device = ref<Device | null>(null);
 const ws = ref<WebSocket | null>(null);
 const status = ref("disconnected");
+const logs = ref<DeviceLog[]>([]);
+
+// Commands & History
+const commandHistory = ref<string[]>([]);
+const osOptions = ["Windows", "Linux"];
+const selectedOs = ref("Windows");
+
+const quickCommands: Record<string, { label: string; command: string; icon: string }[]> = {
+    Windows: [
+        { label: "Current User", command: "whoami", icon: "i-heroicons-user" },
+        { label: "Working Dir", command: "cd", icon: "i-heroicons-folder" },
+        { label: "List Files", command: "dir", icon: "i-heroicons-document-text" },
+        { label: "System Info", command: "systeminfo", icon: "i-heroicons-information-circle" },
+        { label: "IP Config", command: "ipconfig", icon: "i-heroicons-globe-alt" },
+        { label: "Disk Usage", command: "wmic logicaldisk get size,freespace,caption", icon: "i-heroicons-circle-stack" },
+        { label: "Memory Info", command: "systeminfo | findstr Memory", icon: "i-heroicons-cpu-chip" },
+        { label: "Process List", command: "tasklist", icon: "i-heroicons-queue-list" },
+        { label: "Network Stats", command: "netstat -an", icon: "i-heroicons-arrows-right-left" },
+        { label: "Flush DNS", command: "ipconfig /flushdns", icon: "i-heroicons-bolt" },
+    ],
+    Linux: [
+        { label: "Current User", command: "whoami", icon: "i-heroicons-user" },
+        { label: "Working Dir", command: "pwd", icon: "i-heroicons-folder" },
+        { label: "List Files", command: "ls -la", icon: "i-heroicons-document-text" },
+        { label: "System Info", command: "uname -a", icon: "i-heroicons-information-circle" },
+        { label: "IP Address", command: "ip addr", icon: "i-heroicons-globe-alt" },
+        { label: "Disk Usage", command: "df -h", icon: "i-heroicons-circle-stack" },
+        { label: "Memory Info", command: "free -h", icon: "i-heroicons-cpu-chip" },
+        { label: "Process List", command: "ps aux", icon: "i-heroicons-queue-list" },
+        { label: "Network Stats", command: "netstat -an", icon: "i-heroicons-arrows-right-left" },
+        { label: "Uptime", command: "uptime", icon: "i-heroicons-clock" },
+    ],
+};
+
+const activeQuickCommands = computed(() => quickCommands[selectedOs.value] || []);
+
+const sidebarTabs: TabsItem[] = [
+    { label: "Quick", icon: "i-heroicons-bolt", slot: "quick" as const },
+    { label: "History", icon: "i-heroicons-clock", slot: "history" as const },
+    { label: "Logs", icon: "i-heroicons-list-bullet", slot: "logs" as const },
+];
+
+function sendCommand(cmd: string) {
+    if (!ws.value || status.value !== "connected") return;
+
+    // Add to history if not duplicate of last
+    if (cmd && commandHistory.value[0] !== cmd) {
+        commandHistory.value.unshift(cmd);
+        if (commandHistory.value.length > 50) commandHistory.value.pop();
+    }
+
+    ws.value.send(
+        JSON.stringify({
+            type: "input",
+            data: cmd + "\r",
+        }),
+    );
+}
+
+const logColumns: TableColumn<DeviceLog>[] = [
+    {
+        accessorKey: "type",
+        header: "Event",
+    },
+    {
+        accessorKey: "timestamp",
+        header: "Time",
+    },
+];
 
 // Terminal Refs
 const terminalRef = ref<HTMLElement | null>(null);
@@ -33,6 +111,14 @@ async function fetchDevice() {
         device.value = await $fetch<Device>(`/lynx/api/devices/${deviceId}`);
     } catch (err) {
         console.error("Failed to fetch device:", err);
+    }
+}
+
+async function fetchLogs() {
+    try {
+        logs.value = await $fetch<DeviceLog[]>(`/lynx/api/devices/${deviceId}/logs`);
+    } catch (err) {
+        console.error("Failed to fetch logs:", err);
     }
 }
 
@@ -110,8 +196,25 @@ function initTerminal() {
     fitAddon.value.fit();
 
     // Handle user input
+    let currentInputBuffer = "";
     terminal.value.onData((data) => {
         if (ws.value && status.value === "connected") {
+            // Capture history from keyboard
+            if (data === "\r" || data === "\n" || data === "\r\n") {
+                const cmd = currentInputBuffer.trim();
+                if (cmd) {
+                    if (commandHistory.value[0] !== cmd) {
+                        commandHistory.value.unshift(cmd);
+                        if (commandHistory.value.length > 50) commandHistory.value.pop();
+                    }
+                }
+                currentInputBuffer = "";
+            } else if (data === "\x7f" || data === "\b") {
+                currentInputBuffer = currentInputBuffer.slice(0, -1);
+            } else if (data.length === 1 && data.charCodeAt(0) >= 32) {
+                currentInputBuffer += data;
+            }
+
             ws.value.send(
                 JSON.stringify({
                     type: "input",
@@ -123,18 +226,46 @@ function initTerminal() {
 
     connect();
 
-    // Resize observer
+    // Resize observer with debounce and guard to prevent loops
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastCols = 0;
+    let lastRows = 0;
+    let isResizing = false;
+
     const resizeObserver = new ResizeObserver(() => {
-        fitAddon.value?.fit();
-        if (terminal.value && ws.value && status.value === "connected") {
-            ws.value.send(
-                JSON.stringify({
-                    type: "resize",
-                    cols: terminal.value.cols,
-                    rows: terminal.value.rows,
-                }),
-            );
-        }
+        if (isResizing) return;
+        if (resizeTimer) clearTimeout(resizeTimer);
+        
+        resizeTimer = setTimeout(() => {
+            if (!terminal.value || !fitAddon.value) return;
+            
+            isResizing = true;
+            try {
+                fitAddon.value.fit();
+                
+                const newCols = terminal.value.cols;
+                const newRows = terminal.value.rows;
+                
+                // Only send resize if dimensions actually changed
+                if (newCols !== lastCols || newRows !== lastRows) {
+                    lastCols = newCols;
+                    lastRows = newRows;
+                    
+                    if (ws.value && status.value === "connected") {
+                        ws.value.send(
+                            JSON.stringify({
+                                type: "resize",
+                                cols: newCols,
+                                rows: newRows,
+                            }),
+                        );
+                    }
+                }
+            } finally {
+                // Release guard after a short delay to absorb any triggered resize events
+                setTimeout(() => { isResizing = false; }, 100);
+            }
+        }, 300);
     });
 
     if (terminalRef.value) {
@@ -325,12 +456,56 @@ watch(activeScreenshot, (v) => {
 onMounted(async () => {
     await nextTick();
     fetchScreenshots();
+    fetchLogs();
 });
+
+const powerItems = [
+    [{
+        label: 'Restart',
+        icon: 'i-heroicons-arrow-path',
+        click: () => sendPowerCommand('restart')
+    }, {
+        label: 'Shutdown',
+        icon: 'i-heroicons-power',
+        click: () => sendPowerCommand('shutdown')
+    }]
+]
+
+function sendPowerCommand(action: 'restart' | 'shutdown') {
+    if (!ws.value || !device.value) return;
+
+    let command = '';
+    const os = device.value.os || 'Windows'; // Default to Windows if unknown
+
+    if (os.includes('Windows')) {
+        if (action === 'restart') command = 'shutdown /r /t 0';
+        if (action === 'shutdown') command = 'shutdown /s /t 0';
+    } else {
+        // Linux/Unix
+        if (action === 'restart') command = 'shutdown -r now';
+        if (action === 'shutdown') command = 'shutdown -h now';
+    }
+
+    if (command) {
+        ws.value.send(JSON.stringify({
+            type: 'command',
+            command: command
+        }));
+        
+        useToast().add({
+            title: `Sending ${action} command`,
+            description: 'The device should respond shortly.',
+            icon: 'i-heroicons-paper-airplane',
+            color: 'primary'
+        });
+    }
+}
 </script>
 
 <template>
-    <div class="h-[calc(100vh-100px)] flex flex-col gap-4 p-8">
-        <div class="flex justify-between items-center">
+    <div class="min-h-[calc(100vh-100px)] flex flex-col gap-4 p-4 md:p-6">
+        <!-- Header -->
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
             <div class="flex items-center gap-3">
                 <UButton
                     icon="i-heroicons-arrow-left"
@@ -338,22 +513,28 @@ onMounted(async () => {
                     to="/dashboard/devices"
                 />
                 <div>
-                    <div class="flex items-center gap-2">
-                         <h1 class="text-xl font-mono font-bold">
+                    <div class="flex items-center gap-2 flex-wrap">
+                         <h1 class="text-lg md:text-xl font-mono font-bold">
                             {{ device?.name || "Device" }}
                         </h1>
                         <UBadge v-if="device?.group" color="primary" variant="soft" size="xs">
                             {{ device.group }}
                         </UBadge>
+                        <UBadge
+                            :color="device?.status === 'online' ? 'success' : 'neutral'"
+                            size="xs"
+                        >
+                            {{ device?.status || status }}
+                        </UBadge>
                     </div>
                    
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-2 flex-wrap">
                         <code class="text-xs text-gray-500">{{ deviceId }}</code>
                         <span v-if="device?.os" class="text-xs text-gray-500">• {{ device.os }} <span v-if="device.version">(v{{ device.version }})</span></span>
                     </div>
                 </div>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
                  <UButton
                     icon="i-heroicons-pencil-square"
                     variant="ghost"
@@ -368,88 +549,207 @@ onMounted(async () => {
                     size="xs"
                     @click="deleteModalOpen = true"
                 >Delete</UButton>
-                <div class="w-px h-4 bg-gray-700 mx-1"></div>
-                <UButton
-                    icon="i-heroicons-trash"
-                    variant="ghost"
-                    color="neutral"
-                    size="xs"
-                    @click="clearTerminal"
-                    >Clear Term</UButton
-                >
-                <UBadge
-                    :color="device?.status === 'online' ? 'success' : 'neutral'"
-                >
-                    {{ device?.status || status }}
-                </UBadge>
+                <UDropdown :items="powerItems" :popper="{ placement: 'bottom-end' }">
+                    <UButton
+                        icon="i-heroicons-power"
+                        color="warning"
+                        variant="soft"
+                        size="xs"
+                        :disabled="device?.status !== 'online'"
+                    >Power</UButton>
+                </UDropdown>
             </div>
         </div>
 
-        <UCard
-            class="flex-1 flex flex-col min-h-0"
-            :ui="{ body: 'flex-1 flex flex-col min-h-0 p-0' }"
-        >
-            <div
-                ref="terminalRef"
-                class="flex-1 bg-[#0a0a0a] p-2 overflow-hidden"
-            />
-        </UCard>
-
-        <!-- Screenshot Gallery Modal -->
-        <UCard :ui="{ body: 'w-full sm:max-w-4xl' }">
-            <template #header>
-                <div class="flex items-center gap-5">
-                    <h3 class="text-base font-semibold leading-6 text-white">
-                        Screenshots
-                    </h3>
-                    <UButton
-                        icon="i-heroicons-camera"
-                        color="neutral"
-                        variant="solid"
-                        size="xs"
-                        :loading="isTakingScreenshot"
-                        :disabled="device?.status !== 'online'"
-                        @click="takeScreenshot"
-                    >
-                        Take Screenshot
-                    </UButton>
-                </div>
-            </template>
-
-            <div class="p-4">
+        <!-- Bento Grid Layout -->
+        <div class="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-fr">
+            
+            <!-- Terminal Card - Large (spans 3 cols, 2 rows) -->
+            <UCard
+                class="md:col-span-2 lg:col-span-3 lg:row-span-2 flex flex-col min-h-[350px]"
+                :ui="{ body: 'flex-1 flex flex-col p-0 overflow-hidden' }"
+            >
+                <template #header>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <UIcon name="i-heroicons-command-line" class="text-primary-400" />
+                            <span class="text-sm font-semibold">Terminal</span>
+                        </div>
+                        <UButton
+                            icon="i-heroicons-trash"
+                            variant="ghost"
+                            color="neutral"
+                            size="xs"
+                            @click="clearTerminal"
+                        >Clear</UButton>
+                    </div>
+                </template>
                 <div
-                    v-if="screenshots.length === 0"
-                    class="text-center text-gray-500 py-8"
-                >
-                    No screenshots found.
-                </div>
-                <div
-                    v-else
-                    class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-h-[60vh] overflow-y-auto"
-                >
-                    <div
-                        v-for="shot in screenshots"
-                        :key="shot"
-                        class="group relative aspect-video bg-gray-900 rounded-lg overflow-hidden cursor-pointer border border-gray-800 hover:border-primary-500 transition-colors"
-                        @click="activeScreenshot = shot"
-                    >
-                        <img
-                            :src="`/lynx/images/${deviceId}/${shot}`"
-                            class="w-full h-full object-cover"
-                            loading="lazy"
-                        />
-                        <div
-                            class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    ref="terminalRef"
+                    class="flex-1 bg-[#0a0a0a] p-2 overflow-hidden"
+                />
+            </UCard>
+
+            <!-- Quick Commands Card (spans 1 col, 1 row) -->
+            <UCard class="flex flex-col min-h-[200px]" :ui="{ body: 'flex-1 flex flex-col p-0 overflow-hidden' }">
+                <template #header>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <UIcon name="i-heroicons-bolt" class="text-yellow-400" />
+                            <span class="text-sm font-semibold">Quick Commands</span>
+                        </div>
+                        <USelectMenu v-model="selectedOs" :items="osOptions" size="xs" class="w-20" />
+                    </div>
+                </template>
+                <div class="flex-1 p-3 overflow-y-auto">
+                    <div class="grid grid-cols-1 gap-1.5">
+                        <UButton
+                            v-for="cmd in activeQuickCommands"
+                            :key="cmd.command"
+                            :icon="cmd.icon"
+                            variant="ghost"
+                            color="neutral"
+                            size="xs"
+                            block
+                            class="justify-start font-mono text-[10px]"
+                            @click="sendCommand(cmd.command)"
                         >
-                            <UIcon
-                                name="i-heroicons-eye"
-                                class="text-white w-8 h-8"
-                            />
+                            {{ cmd.label }}
+                        </UButton>
+                    </div>
+                </div>
+            </UCard>
+
+            <!-- History Card (spans 1 col, 1 row) -->
+            <UCard class="flex flex-col min-h-[200px]" :ui="{ body: 'flex-1 flex flex-col p-0 overflow-hidden' }">
+                <template #header>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <UIcon name="i-heroicons-clock" class="text-blue-400" />
+                            <span class="text-sm font-semibold">History</span>
+                            <UBadge v-if="commandHistory.length > 0" color="neutral" variant="subtle" size="xs">
+                                {{ commandHistory.length }}
+                            </UBadge>
+                        </div>
+                        <UButton
+                            v-if="commandHistory.length > 0"
+                            icon="i-heroicons-trash"
+                            variant="ghost"
+                            color="error"
+                            size="xs"
+                            @click="commandHistory = []"
+                        />
+                    </div>
+                </template>
+                <div class="flex-1 overflow-y-auto">
+                    <div v-if="commandHistory.length === 0" class="flex-1 flex flex-col items-center justify-center text-gray-500 text-xs p-4 text-center h-full">
+                        <UIcon name="i-heroicons-clock" class="w-8 h-8 mb-2 opacity-20" />
+                        No history yet
+                    </div>
+                    <div v-else class="p-2 flex flex-col gap-1">
+                        <div
+                            v-for="(cmd, i) in commandHistory.slice(0, 10)"
+                            :key="i"
+                            class="group flex items-center gap-2 p-2 rounded hover:bg-white/5 cursor-pointer text-xs"
+                            @click="sendCommand(cmd)"
+                        >
+                            <UIcon name="i-heroicons-chevron-right" class="text-gray-600 w-3 h-3 shrink-0" />
+                            <code class="text-gray-300 truncate flex-1">{{ cmd }}</code>
                         </div>
                     </div>
                 </div>
-            </div>
-        </UCard>
+            </UCard>
+
+            <!-- Screenshots Card (spans 2 cols on lg) -->
+            <UCard class="md:col-span-2 lg:col-span-2 flex flex-col min-h-[200px]" :ui="{ body: 'flex-1 p-0 overflow-hidden' }">
+                <template #header>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <UIcon name="i-heroicons-photo" class="text-purple-400" />
+                            <span class="text-sm font-semibold">Screenshots</span>
+                            <UBadge v-if="screenshots.length > 0" color="neutral" variant="subtle" size="xs">
+                                {{ screenshots.length }}
+                            </UBadge>
+                        </div>
+                        <UButton
+                            icon="i-heroicons-camera"
+                            color="primary"
+                            variant="soft"
+                            size="xs"
+                            :loading="isTakingScreenshot"
+                            :disabled="device?.status !== 'online'"
+                            @click="takeScreenshot"
+                        >
+                            Capture
+                        </UButton>
+                    </div>
+                </template>
+                <div class="p-3 h-full">
+                    <div
+                        v-if="screenshots.length === 0"
+                        class="flex flex-col items-center justify-center text-gray-500 h-full"
+                    >
+                        <UIcon name="i-heroicons-photo" class="w-8 h-8 mb-2 opacity-20" />
+                        <span class="text-xs">No screenshots yet</span>
+                    </div>
+                    <div
+                        v-else
+                        class="grid grid-cols-3 sm:grid-cols-4 gap-2"
+                    >
+                        <div
+                            v-for="shot in screenshots.slice(0, 8)"
+                            :key="shot"
+                            class="group relative aspect-video bg-gray-900 rounded overflow-hidden cursor-pointer border border-gray-800 hover:border-primary-500 transition-all"
+                            @click="activeScreenshot = shot"
+                        >
+                            <img
+                                :src="`/lynx/images/${deviceId}/${shot}`"
+                                class="w-full h-full object-cover"
+                                loading="lazy"
+                            />
+                            <div
+                                class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                            >
+                                <UIcon name="i-heroicons-magnifying-glass-plus" class="text-white w-4 h-4" />
+                            </div>
+                        </div>
+                        <div
+                            v-if="screenshots.length > 8"
+                            class="aspect-video bg-gray-800/50 rounded flex items-center justify-center text-gray-400 text-xs font-medium cursor-pointer hover:bg-gray-800 transition-colors"
+                        >
+                            +{{ screenshots.length - 8 }}
+                        </div>
+                    </div>
+                </div>
+            </UCard>
+
+            <!-- Connection Logs Card (spans 2 cols on lg) -->
+            <UCard class="md:col-span-2 lg:col-span-2 flex flex-col min-h-[200px]" :ui="{ body: 'flex-1 p-0 overflow-hidden' }">
+                <template #header>
+                    <div class="flex items-center gap-2">
+                        <UIcon name="i-heroicons-list-bullet" class="text-green-400" />
+                        <span class="text-sm font-semibold">Connection Logs</span>
+                    </div>
+                </template>
+                <div class="flex-1 overflow-y-auto">
+                    <UTable :data="logs" :columns="logColumns" :ui="{ td: 'px-3 py-2', th: 'px-3 py-2' }">
+                        <template #type-cell="{ row }">
+                            <UBadge 
+                                :color="row.original.type === 'connect' ? 'success' : row.original.type === 'reconnect' ? 'warning' : 'error'"
+                                variant="subtle"
+                                size="xs"
+                                class="text-[10px]"
+                            >
+                                {{ row.original.type.toUpperCase() }}
+                            </UBadge>
+                        </template>
+                        <template #timestamp-cell="{ row }">
+                            <span class="text-[10px] text-gray-500 font-mono">{{ formatRelativeTime(row.original.timestamp) }}</span>
+                        </template>
+                    </UTable>
+                </div>
+            </UCard>
+        </div>
 
         <UModal
             v-model:open="isScreenshotModalOpen"

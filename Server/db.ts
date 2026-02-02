@@ -21,7 +21,18 @@ export const devices = sqliteTable("device", {
   version: text("version"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  uptime: integer("uptime"),
+});
+
+export const deviceLogs = sqliteTable("device_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  deviceId: text("device_id").notNull(),
+  type: text("type", { enum: ["connect", "disconnect", "reconnect"] }).notNull(),
+  timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
+  message: text("message"),
 });
 
 export type Device = typeof devices.$inferSelect;
 export type NewDevice = typeof devices.$inferInsert;
+export type DeviceLog = typeof deviceLogs.$inferSelect;
+export type NewDeviceLog = typeof deviceLogs.$inferInsert;

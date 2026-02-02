@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { formatRelativeTime } from "~/utils/formatters";
 import "@xterm/xterm/css/xterm.css";
 
 interface Device {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { TableColumn } from "@nuxt/ui";
 import { authClient } from "~/utils/auth-client";
+import { formatRelativeTime, formatUptime } from "~/utils/formatters";
 
 definePageMeta({
     layout: "dashboard",
@@ -14,6 +15,7 @@ interface Device {
     name: string;
     status: "online" | "offline";
     lastSeen: Date;
+    uptime: number | null;
 }
 
 const devices = ref<Device[]>([]);
@@ -46,6 +48,10 @@ const columns: TableColumn<Device>[] = [
     {
         accessorKey: "status",
         header: "Status",
+    },
+    {
+        accessorKey: "uptime",
+        header: "Uptime",
     },
     {
         accessorKey: "lastSeen",
@@ -138,7 +144,10 @@ function copyId() {
         </template>
         <UTable :data="devices" :columns="columns">
             <template #lastSeen-cell="{ row }">
-                {{ formatDate(row.original.lastSeen) }}
+                <span class="text-neutral-400">{{ formatRelativeTime(row.original.lastSeen) }}</span>
+            </template>
+            <template #uptime-cell="{ row }">
+                <span class="font-mono text-xs">{{ formatUptime(row.original.uptime) }}</span>
             </template>
             <template #status-cell="{ row }">
                 <UBadge

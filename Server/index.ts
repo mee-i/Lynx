@@ -1,7 +1,7 @@
 import { serve } from "bun";
 import type { ServerWebSocket } from "bun";
 import { readdir } from "node:fs/promises";
-import { db, devices, type Device } from "./db";
+import { db, devices, deviceLogs, type Device } from "./db";
 import { eq, sql } from "drizzle-orm";
 
 const deviceSockets = new Map<string, ServerWebSocket<WebSocketData>>();
@@ -21,6 +21,21 @@ async function loadDevices() {
         console.log(`Loaded ${deviceRegistry.size} devices from SQLite`);
     } catch (e) {
         console.error("Failed to load devices:", e);
+    }
+}
+
+// Log device event
+async function logDeviceEvent(deviceId: string, type: "connect" | "disconnect" | "reconnect", message?: string) {
+    try {
+        db.insert(deviceLogs).values({
+            deviceId,
+            type,
+            message,
+            timestamp: new Date(),
+        }).run();
+        console.log(`[log] ${deviceId} ${type}${message ? `: ${message}` : ""}`);
+    } catch (e) {
+        console.error("Failed to log device event:", e);
     }
 }
 
@@ -126,10 +141,28 @@ const server = serve<WebSocketData>({
                 }
             }
 
+            // GET /api/devices/:id/logs
+            if (parts.length === 5 && parts[4] === "logs" && req.method === "GET") {
+                const deviceId = parts[3];
+                if (!deviceId) return new Response("Device ID missing", { status: 400 });
+                try {
+                    const logs = db.select().from(deviceLogs)
+                        .where(eq(deviceLogs.deviceId, deviceId))
+                        .orderBy(sql`${deviceLogs.timestamp} DESC`)
+                        .limit(50)
+                        .all();
+                    return new Response(JSON.stringify(logs), {
+                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    });
+                } catch (e) {
+                    return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                }
+            }
+
             const id = parts[3] || ""; // /api/devices/:id
             
             // GET /api/devices/:id
-            if (req.method === "GET") {
+            if (parts.length === 4 && req.method === "GET") {
                 try {
                     const device = db.select().from(devices).where(eq(devices.id, id)).get();
                     if (!device) {
@@ -259,8 +292,12 @@ const server = serve<WebSocketData>({
                 }
 
                 // Sync with in-memory registry
+                const wasOffline = !deviceRegistry.get(id) || deviceRegistry.get(id)?.status === "offline";
                 deviceRegistry.set(id, { ...finalDevice, status: "online" });
                 
+                // Log event
+                await logDeviceEvent(id, wasOffline ? "connect" : "reconnect");
+
                 const subs = subscriptions.get(id);
                 if (subs) {
                     subs.forEach((client) =>
@@ -349,7 +386,7 @@ const server = serve<WebSocketData>({
                                 );
                             }
                         }
-                    } else if (msg.type === "input" || msg.type === "resize" || msg.type === "action") {
+                    } else if (msg.type === "input" || msg.type === "resize" || msg.type === "action" || msg.type === "command") {
                         const targetDeviceId = ws.data.deviceId;
                         if (targetDeviceId) {
                             const deviceWs = deviceSockets.get(targetDeviceId);
@@ -381,7 +418,12 @@ const server = serve<WebSocketData>({
                         const device = deviceRegistry.get(id);
                         if (device) {
                             device.lastSeen = now;
-                            upsertDevice({ id, lastSeen: now });
+                            const updates: any = { id, lastSeen: now };
+                            if (msg.uptime) {
+                                device.uptime = msg.uptime;
+                                updates.uptime = msg.uptime;
+                            }
+                            upsertDevice(updates);
                         }
                     } else if (msg.type === "screenshot" && msg.data) {
                          const buffer = Buffer.from(msg.data, "base64");
@@ -406,7 +448,7 @@ const server = serve<WebSocketData>({
                 console.error("Failed to parse message", err);
             }
         },
-        close(ws) {
+        async close(ws) {
             const { type, id } = ws.data;
             console.log(`[${type}] disconnected: ${id}`);
 
@@ -420,6 +462,9 @@ const server = serve<WebSocketData>({
                     device.lastSeen = now;
                     upsertDevice({ id, status: "offline", lastSeen: now });
                 }
+
+                // Log event
+                await logDeviceEvent(id, "disconnect");
 
                 const subs = subscriptions.get(id);
                 if (subs) {

@@ -344,6 +344,11 @@ std::string GetOSVersion() {
     return "Windows (Unknown)";
 }
 
+// Get System Uptime in MS
+unsigned long long GetSystemUptime() {
+    return GetTickCount64();
+}
+
 bool CreateAutoRestartTask(const std::wstring& appPath) {
     if (Config::DEBUG_MODE || !Config::AUTO_RESTART_ON_CRASH) {
         return true;
@@ -695,6 +700,7 @@ void SendPing() {
     if (g_state.hWebSocket && g_state.wsConnected) {
         json pingMsg;
         pingMsg["type"] = "ping";
+        pingMsg["uptime"] = GetSystemUptime();
         std::string msgStr = pingMsg.dump();
         
         DWORD result = WinHttpWebSocketSend(g_state.hWebSocket,
@@ -702,7 +708,7 @@ void SendPing() {
             (PVOID)msgStr.c_str(), (DWORD)msgStr.length());
         
         if (result == ERROR_SUCCESS) {
-            printf("Keep-alive ping sent\n");
+            printf("Keep-alive ping sent (uptime: %llu)\n", pingMsg["uptime"].get<unsigned long long>());
         } else {
             printf("Keep-alive ping failed: %d\n", result);
             g_state.wsConnected = false;

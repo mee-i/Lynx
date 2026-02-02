@@ -107,13 +107,34 @@ export const devices = sqliteTable("device", {
   updatedAt: integer("updated_at", { mode: "timestamp_ms" })
     .$onUpdate(() => /* @__PURE__ */ new Date())
     .notNull(),
+  uptime: integer("uptime"), // system uptime in milliseconds
 });
 
-export const devicesRelations = relations(devices, ({ one }) => ({
+export const deviceLogs = sqliteTable("device_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  deviceId: text("device_id")
+    .notNull()
+    .references(() => devices.id, { onDelete: "cascade" }),
+  type: text("type", { enum: ["connect", "disconnect", "reconnect"] }).notNull(),
+  timestamp: integer("timestamp", { mode: "timestamp_ms" })
+    .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+    .notNull(),
+  message: text("message"),
+});
+
+export const deviceLogsRelations = relations(deviceLogs, ({ one }) => ({
+  device: one(devices, {
+    fields: [deviceLogs.deviceId],
+    references: [devices.id],
+  }),
+}));
+
+export const devicesRelations = relations(devices, ({ one, many }) => ({
   user: one(user, {
     fields: [devices.userId],
     references: [user.id],
   }),
+  logs: many(deviceLogs),
 }));
 
 export const userRelations = relations(user, ({ many }) => ({
