@@ -2,9 +2,9 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { TableColumn, TabsItem } from "@nuxt/ui";
-import { formatRelativeTime } from "~/utils/formatters";
 import "@xterm/xterm/css/xterm.css";
 import { card } from "#build/ui";
+import LineChart from "~/components/chart/LineChart.vue";
 
 const route = useRoute();
 const deviceId = route.params.id as string;
@@ -31,6 +31,70 @@ const device = ref<Device | null>(null);
 const ws = ref<WebSocket | null>(null);
 const status = ref("disconnected");
 const logs = ref<DeviceLog[]>([]);
+
+// Metrics
+interface MetricsPoint {
+    cpu: number;
+    ram: number;
+    disk: number;
+    netUp: number;
+    netDown: number;
+    timestamp: number;
+}
+const metricsHistory = ref<MetricsPoint[]>([]);
+const currentMetrics = computed(() => metricsHistory.value[metricsHistory.value.length - 1] || { cpu: 0, ram: 0, disk: 0, netUp: 0, netDown: 0 });
+
+const timeRanges = [
+    { label: '30s', value: 30 * 1000 },
+    { label: '1m', value: 60 * 1000 },
+    { label: '5m', value: 5 * 60 * 1000 },
+    { label: '15m', value: 15 * 60 * 1000 },
+];
+const selectedRange = ref({ label: '30s', value: 30 * 1000 });
+
+const filteredMetrics = computed(() => {
+    const now = Date.now();
+    return metricsHistory.value.filter(m => now - m.timestamp <= selectedRange.value.value);
+});
+
+const commonChartOptions = computed(() => ({
+    maintainAspectRatio: false,
+    plugins: {
+        legend: { display: false },
+        tooltip: { enabled: true }
+    },
+    scales: {
+        x: {
+            display: true,
+            grid: { display: false },
+            ticks: {
+                maxTicksLimit: 5,
+                callback: (val: any, index: number) => {
+                    const point = filteredMetrics.value[val];
+                    if (!point) return '';
+                    const date = new Date(point.timestamp);
+                    return `${date.getHours()}:${date.getMinutes()}:${date.getSeconds()}`;
+                }
+            }
+        },
+        y: {
+            display: true,
+            min: 0,
+            max: 100,
+            grid: { color: 'rgba(148, 163, 184, 0.1)' },
+            ticks: { stepSize: 20 }
+        }
+    }
+}));
+
+
+const chartConfig = {
+    cpu: { label: "CPU (%)", color: "var(--color-primary-500)" },
+    ram: { label: "RAM (%)", color: "var(--color-purple-500)" },
+    disk: { label: "Disk (%)", color: "var(--color-orange-500)" },
+    netUp: { label: "Upload (KB/s)", color: "var(--color-blue-500)" },
+    netDown: { label: "Download (KB/s)", color: "var(--color-green-500)" }
+};
 
 // Commands & History
 const commandHistory = ref<string[]>([]);
@@ -122,8 +186,26 @@ async function fetchLogs() {
     }
 }
 
+async function fetchMetrics() {
+    try {
+        const history = await $fetch<any[]>(`/lynx/api/devices/${deviceId}/metrics`);
+        // Map DB fields to chart interface
+        metricsHistory.value = history.map(h => ({
+            cpu: h.cpuUsage,
+            ram: h.ramUsage,
+            disk: h.diskUsage,
+            netUp: h.networkUp,
+            netDown: h.networkDown,
+            timestamp: new Date(h.timestamp).getTime()
+        }));
+    } catch (err) {
+        console.error("Failed to fetch metrics:", err);
+    }
+}
+
 onMounted(() => {
     fetchDevice();
+    fetchMetrics();
     // Delay initialization slightly to ensure DOM is ready and layout is stable
     nextTick(() => {
         initTerminal();
@@ -356,6 +438,21 @@ function connect() {
                     icon: "i-heroicons-photo",
                     color: "success",
                 });
+            } else if (msg.type === "metrics") {
+                const point: MetricsPoint = {
+                    cpu: msg.data.cpu,
+                    ram: msg.data.ram,
+                    disk: msg.data.disk,
+                    netUp: msg.data.netUp,
+                    netDown: msg.data.netDown,
+                    timestamp: Date.now()
+                };
+                
+                // Keep last 200 points
+                metricsHistory.value.push(point);
+                if (metricsHistory.value.length > 200) {
+                    metricsHistory.value.shift();
+                }
             }
         } catch (e) {
             console.error(e);
@@ -566,6 +663,109 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
                     >Power</UButton>
                 </UDropdown>
             </div>
+        </div>
+
+        <!-- Resource Monitoring Header -->
+        <div class="flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Resource Monitoring</h2>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500">Range:</span>
+                <USelectMenu
+                    v-model="selectedRange"
+                    :items="timeRanges"
+                    value-attribute="value"
+                    option-attribute="label"
+                    size="xs"
+                    class="w-20"
+                />
+            </div>
+        </div>
+
+        <!-- Resource Monitoring -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+             <UCard :ui="{ body: 'p-4' }">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm text-gray-400">CPU Usage</span>
+                    <UIcon name="i-heroicons-cpu-chip" class="w-4 h-4 text-primary-500" />
+                </div>
+                <div class="text-2xl font-bold font-mono" :class="{ 'text-red-500': currentMetrics.cpu > 80 }">
+                    {{ currentMetrics.cpu.toFixed(1) }}%
+                </div>
+                <LineChart
+                    class="h-[80px] mt-2"
+                    :data="filteredMetrics"
+                    index="timestamp"
+                    :categories="['cpu']"
+                    :config="chartConfig"
+                    :options="commonChartOptions"
+                />
+             </UCard>
+             <UCard :ui="{ body: 'p-4' }">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm text-gray-400">RAM Usage</span>
+                    <UIcon name="i-heroicons-server" class="w-4 h-4 text-purple-500" />
+                </div>
+                 <div class="text-2xl font-bold font-mono" :class="{ 'text-red-500': currentMetrics.ram > 80 }">
+                    {{ currentMetrics.ram.toFixed(1) }}%
+                </div>
+                 <LineChart
+                    class="h-[80px] mt-2"
+                    :data="filteredMetrics"
+                    index="timestamp"
+                    :categories="['ram']"
+                    :config="chartConfig"
+                    :options="commonChartOptions"
+                />
+             </UCard>
+             <UCard :ui="{ body: 'p-4' }">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm text-gray-400">Disk Usage</span>
+                    <UIcon name="i-heroicons-circle-stack" class="w-4 h-4 text-orange-500" />
+                </div>
+                 <div class="text-2xl font-bold font-mono">
+                    {{ currentMetrics.disk.toFixed(1) }}%
+                </div>
+                 <LineChart
+                    class="h-[80px] mt-2"
+                    :data="filteredMetrics"
+                    index="timestamp"
+                    :categories="['disk']"
+                    :config="chartConfig"
+                    :options="commonChartOptions"
+                />
+             </UCard>
+              <UCard :ui="{ body: 'p-4' }">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm text-gray-400">Network</span>
+                    <UIcon name="i-heroicons-globe-alt" class="w-4 h-4 text-blue-500" />
+                </div>
+                 <div class="flex flex-col gap-1">
+                    <div class="text-xs font-mono flex justify-between">
+                         <span class="text-blue-400">↑ {{ currentMetrics.netUp.toFixed(1) }} KB/s</span>
+                    </div>
+                     <div class="text-xs font-mono flex justify-between">
+                         <span class="text-green-400">↓ {{ currentMetrics.netDown.toFixed(1) }} KB/s</span>
+                    </div>
+                </div>
+                 <LineChart
+                    class="h-[60px] mt-2"
+                    :data="filteredMetrics"
+                    index="timestamp"
+                    :categories="['netUp', 'netDown']"
+                    :config="chartConfig"
+                    :options="{ 
+                        ...commonChartOptions, 
+                        scales: { 
+                            ...commonChartOptions.scales, 
+                            y: { 
+                                ...(commonChartOptions.scales?.y || {}), 
+                                max: undefined, 
+                                ticks: { stepSize: undefined } 
+                            } 
+                        } 
+                    }"
+                />
+             </UCard>
         </div>
 
         <!-- Bento Grid Layout -->

@@ -7,7 +7,7 @@
 <script setup lang="ts">
 import { Line } from 'vue-chartjs';
 import { computed } from 'vue';
-import { getBaseOptions, getDarkOptions } from '~/app/utils/chart-defaults';
+import { getBaseOptions, getDarkOptions } from '@/utils/chart';
 import ChartContainer from './ChartContainer.vue';
 
 interface ChartConfigItem {
@@ -32,18 +32,24 @@ const mergedOptions = computed(() => {
   const base = colorMode.value === 'dark' ? getDarkOptions() : getBaseOptions();
   
   // Merge with custom options if provided
-  return {
+  const options = {
     ...base,
     ...props.options,
     plugins: {
       ...base.plugins,
       ...props.options?.plugins,
+      tooltip: {
+        ...base.plugins?.tooltip,
+        enabled: true,
+        ...props.options?.plugins?.tooltip,
+      }
     },
     scales: {
       ...base.scales,
       ...props.options?.scales,
     }
   };
+  return options;
 });
 
 const chartData = computed(() => ({
@@ -75,10 +81,20 @@ const chartData = computed(() => ({
         gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.3)`);
         gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
       } else {
-        // Handle hsl(H S L) or rgb(...)
-        const baseColor = color.replace(')', '');
-        gradient.addColorStop(0, `${baseColor} / 0.3)`);
-        gradient.addColorStop(1, `${baseColor} / 0)`);
+        // Handle hsl(H S L) or rgb(...) or oklch(...)
+        // Use a more robust check for modern color syntax with alpha
+        const hasAlphaIndex = color.indexOf('/')
+        const baseColor = color.endsWith(')') ? color.slice(0, -1) : color
+        
+        if (hasAlphaIndex !== -1) {
+          // If it already has alpha, replace it for the fade effect
+          const colorWithoutAlpha = color.substring(0, hasAlphaIndex).trim()
+          gradient.addColorStop(0, `${colorWithoutAlpha} / 0.3)`)
+          gradient.addColorStop(1, `${colorWithoutAlpha} / 0)`)
+        } else {
+          gradient.addColorStop(0, `${baseColor} / 0.3)`)
+          gradient.addColorStop(1, `${baseColor} / 0)`)
+        }
       }
       return gradient;
     },

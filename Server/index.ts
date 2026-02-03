@@ -1,7 +1,7 @@
 import { serve } from "bun";
 import type { ServerWebSocket } from "bun";
 import { readdir } from "node:fs/promises";
-import { db, devices, deviceLogs, type Device } from "./db";
+import { db, devices, deviceLogs, deviceMetrics, type Device } from "./db";
 import { eq, sql } from "drizzle-orm";
 
 const deviceSockets = new Map<string, ServerWebSocket<WebSocketData>>();
@@ -183,6 +183,33 @@ const server = serve<WebSocketData>({
                         .limit(50)
                         .all();
                     return new Response(JSON.stringify(logs), {
+                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    });
+                } catch (e) {
+                    return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                }
+            }
+
+            // GET /api/devices/:id/metrics
+            if (parts.length === 5 && parts[4] === "metrics" && req.method === "GET") {
+                const deviceId = parts[3];
+                if (!deviceId) return new Response("Device ID missing", { status: 400 });
+                try {
+                    // Get last 24h metrics
+                    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+                    const metrics = db.select().from(deviceMetrics)
+                        .where(
+                            sql`${deviceMetrics.deviceId} = ${deviceId} AND ${deviceMetrics.timestamp} > ${oneDayAgo}`
+                        )
+                        .orderBy(sql`${deviceMetrics.timestamp} ASC`)
+                        .all();
+                        
+                    // Downsample
+                    const result = metrics.length > 200 
+                        ? metrics.filter((_, i) => i % Math.ceil(metrics.length / 200) === 0)
+                        : metrics;
+
+                    return new Response(JSON.stringify(result), {
                         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
                     });
                 } catch (e) {
@@ -432,6 +459,36 @@ const server = serve<WebSocketData>({
                                 updates.uptime = msg.uptime;
                             }
                             upsertDevice(updates);
+                        }
+                    } else if (msg.type === "metrics") {
+                        if (msg.data) {
+                            // Persist metrics
+                           try {
+                                db.insert(deviceMetrics).values({
+                                    deviceId: id,
+                                    cpuUsage: Math.round(msg.data.cpu),
+                                    ramUsage: Math.round(msg.data.ram),
+                                    diskUsage: Math.round(msg.data.disk),
+                                    networkUp: Math.round(msg.data.netUp),
+                                    networkDown: Math.round(msg.data.netDown),
+                                    timestamp: new Date(),
+                                }).run();
+                           } catch (e) {
+                               console.error("Failed to save metrics:", e);
+                           }
+
+                            const subs = subscriptions.get(id);
+                            if (subs) {
+                                subs.forEach((client) =>
+                                    client.send(
+                                        JSON.stringify({
+                                            type: "metrics",
+                                            data: msg.data,
+                                            deviceId: id,
+                                        }),
+                                    ),
+                                );
+                            }
                         }
                     } else if (msg.type === "screenshot" && msg.data) {
                          const buffer = Buffer.from(msg.data, "base64");

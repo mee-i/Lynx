@@ -7,7 +7,7 @@
 <script setup lang="ts">
 import { Bar } from 'vue-chartjs';
 import { computed } from 'vue';
-import { getBaseOptions, getDarkOptions } from '~/app/utils/chart-defaults';
+import { getBaseOptions, getDarkOptions } from '@/utils/chart';
 import ChartContainer from './ChartContainer.vue';
 
 interface ChartConfigItem {

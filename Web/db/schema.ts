@@ -143,6 +143,28 @@ export const userRelations = relations(user, ({ many }) => ({
   devices: many(devices),
 }));
 
+export const deviceMetrics = sqliteTable("device_metrics", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  deviceId: text("device_id")
+    .notNull()
+    .references(() => devices.id, { onDelete: "cascade" }),
+  cpuUsage: integer("cpu_usage"),
+  ramUsage: integer("ram_usage"),
+  diskUsage: integer("disk_usage"),
+  networkUp: integer("network_up"), // KB/s
+  networkDown: integer("network_down"), // KB/s
+  timestamp: integer("timestamp", { mode: "timestamp_ms" })
+    .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+    .notNull(),
+});
+
+export const deviceMetricsRelations = relations(deviceMetrics, ({ one }) => ({
+  device: one(devices, {
+    fields: [deviceMetrics.deviceId],
+    references: [devices.id],
+  }),
+}));
+
 export const sessionRelations = relations(session, ({ one }) => ({
   user: one(user, {
     fields: [session.userId],

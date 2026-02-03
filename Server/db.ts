@@ -32,6 +32,17 @@ export const deviceLogs = sqliteTable("device_log", {
   message: text("message"),
 });
 
+export const deviceMetrics = sqliteTable("device_metrics", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  deviceId: text("device_id").notNull(),
+  cpuUsage: integer("cpu_usage"),
+  ramUsage: integer("ram_usage"),
+  diskUsage: integer("disk_usage"),
+  networkUp: integer("network_up"), // KB/s
+  networkDown: integer("network_down"), // KB/s
+  timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
+});
+
 export type Device = typeof devices.$inferSelect;
 export type NewDevice = typeof devices.$inferInsert;
 export type DeviceLog = typeof deviceLogs.$inferSelect;
