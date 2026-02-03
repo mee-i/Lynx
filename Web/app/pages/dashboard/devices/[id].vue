@@ -73,7 +73,7 @@ const commonChartOptions = computed(() => ({
                     const point = filteredMetrics.value[val];
                     if (!point) return '';
                     const date = new Date(point.timestamp);
-                    return `${date.getHours()}:${date.getMinutes()}:${date.getSeconds()}`;
+                    return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
                 }
             }
         },
@@ -87,11 +87,91 @@ const commonChartOptions = computed(() => ({
     }
 }));
 
+// Alerts & Thresholds
+const thresholds = reactive({
+    cpu: 80,
+    ram: 80,
+    net: 1000 // 1MB/s
+});
+
+const enabledAlerts = reactive({
+    cpu: false,
+    ram: false,
+    net: false
+});
+
+const alertStates = reactive({
+    cpu: false,
+    ram: false,
+    net: false
+});
+
+const toast = useToast();
+
+watch(() => currentMetrics.value, (newMetrics) => {
+    // CPU Alert
+    if (enabledAlerts.cpu && newMetrics.cpu > thresholds.cpu) {
+        if (!alertStates.cpu) {
+            toast.add({
+                title: 'High CPU Usage',
+                description: `CPU usage on ${device.value?.name || 'device'} is ${newMetrics.cpu.toFixed(1)}%`,
+                color: 'error',
+                icon: 'i-heroicons-cpu-chip'
+            });
+            alertStates.cpu = true;
+        }
+    } else {
+        alertStates.cpu = false;
+    }
+
+    // RAM Alert
+    if (enabledAlerts.ram && newMetrics.ram > thresholds.ram) {
+        if (!alertStates.ram) {
+            toast.add({
+                title: 'High RAM Usage',
+                description: `RAM usage on ${device.value?.name || 'device'} is ${newMetrics.ram.toFixed(1)}%`,
+                color: 'error',
+                icon: 'i-heroicons-server'
+            });
+            alertStates.ram = true;
+        }
+    } else {
+        alertStates.ram = false;
+    }
+
+    // Network Alert (Total Up + Down)
+    const totalNet = newMetrics.netUp + newMetrics.netDown;
+    if (enabledAlerts.net && totalNet > thresholds.net) {
+        if (!alertStates.net) {
+            toast.add({
+                title: 'High Network Traffic',
+                description: `Network traffic on ${device.value?.name || 'device'} is ${(totalNet / 1024).toFixed(2)} MB/s`,
+                color: 'error',
+                icon: 'i-heroicons-globe-alt'
+            });
+            alertStates.net = true;
+        }
+    } else {
+        alertStates.net = false;
+    }
+}, { deep: true });
+
+function formatRelativeTime(timestamp: string | Date) {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+    if (diff < 60) return 'Just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return date.toLocaleDateString();
+}
+
 
 const chartConfig = {
-    cpu: { label: "CPU (%)", color: "var(--color-primary-500)" },
-    ram: { label: "RAM (%)", color: "var(--color-purple-500)" },
-    disk: { label: "Disk (%)", color: "var(--color-orange-500)" },
+    cpu: { label: "CPU (%)", color: "var(--color-blue-500)" },
+    ram: { label: "RAM (%)", color: "var(--color-blue-500)" },
+    disk: { label: "Disk (%)", color: "var(--color-blue-500)" },
     netUp: { label: "Upload (KB/s)", color: "var(--color-blue-500)" },
     netDown: { label: "Download (KB/s)", color: "var(--color-green-500)" }
 };
@@ -666,33 +746,46 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
         </div>
 
         <!-- Resource Monitoring Header -->
-        <div class="flex items-center justify-between">
-            <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Resource Monitoring</h2>
-            <div class="flex items-center gap-2">
-                <span class="text-xs text-gray-500">Range:</span>
-                <USelectMenu
-                    v-model="selectedRange"
-                    :items="timeRanges"
-                    value-attribute="value"
-                    option-attribute="label"
-                    size="xs"
-                    class="w-20"
-                />
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-6 mb-2">
+            <div class="flex flex-col gap-1">
+                <h2 class="text-sm font-bold text-gray-500 uppercase tracking-[0.2em]">Resource Monitoring</h2>
+                <p class="text-xs text-gray-400">Real-time system performance and network activity</p>
+            </div>
+            <div class="flex items-center gap-4 flex-wrap">
+                <div class="flex items-center gap-2 bg-gray-800/50 px-3 py-1.5 rounded-lg border border-gray-800">
+                    <span class="text-xs text-gray-500 font-medium font-mono uppercase tracking-widest">Range</span>
+                    <USelectMenu
+                        v-model="selectedRange"
+                        :items="timeRanges"
+                        value-attribute="value"
+                        option-attribute="label"
+                        size="xs"
+                        variant="ghost"
+                        class="w-20 font-mono"
+                    />
+                </div>
             </div>
         </div>
 
-        <!-- Resource Monitoring -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-             <UCard :ui="{ body: 'p-4' }">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm text-gray-400">CPU Usage</span>
-                    <UIcon name="i-heroicons-cpu-chip" class="w-4 h-4 text-primary-500" />
+        <!-- Resource Monitoring Grid -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-6">
+             <!-- CPU Card -->
+             <UCard :ui="{ body: 'p-6' }" :class="{ 'ring-2 ring-red-500 bg-red-500/5': alertStates.cpu }" class="transition-all duration-300">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <UIcon name="i-heroicons-cpu-chip" :class="['w-5 h-5', alertStates.cpu ? 'text-red-500 animate-pulse' : '']" />
+                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">CPU</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <UInputNumber v-if="enabledAlerts.cpu" v-model="thresholds.cpu" size="xs" class="w-32" :max="100"/>
+                        <USwitch v-model="enabledAlerts.cpu" size="sm" color="error" description="Enable Alert" />
+                    </div>
                 </div>
-                <div class="text-2xl font-bold font-mono" :class="{ 'text-red-500': currentMetrics.cpu > 80 }">
-                    {{ currentMetrics.cpu.toFixed(1) }}%
+                <div class="text-3xl font-bold font-mono mb-4" :class="{ 'text-red-500': alertStates.cpu }">
+                    {{ currentMetrics.cpu.toFixed(1) }}<span class="text-sm text-gray-500 ml-1">%</span>
                 </div>
                 <LineChart
-                    class="h-[80px] mt-2"
+                    class="h-[100px]"
                     :data="filteredMetrics"
                     index="timestamp"
                     :categories="['cpu']"
@@ -700,16 +793,24 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
                     :options="commonChartOptions"
                 />
              </UCard>
-             <UCard :ui="{ body: 'p-4' }">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm text-gray-400">RAM Usage</span>
-                    <UIcon name="i-heroicons-server" class="w-4 h-4 text-purple-500" />
+
+             <!-- RAM Card -->
+             <UCard :ui="{ body: 'p-6' }" :class="{ 'ring-2 ring-red-500 bg-red-500/5': alertStates.ram }" class="transition-all duration-300">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <UIcon name="i-heroicons-server" :class="['w-5 h-5', alertStates.ram ? 'text-red-500 animate-pulse' : '']" />
+                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">RAM</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <UInputNumber v-if="enabledAlerts.ram" v-model="thresholds.ram" size="xs" class="w-32" :max="100"/>
+                        <USwitch v-model="enabledAlerts.ram" size="sm" color="error" description="Enable Alert" />
+                    </div>
                 </div>
-                 <div class="text-2xl font-bold font-mono" :class="{ 'text-red-500': currentMetrics.ram > 80 }">
-                    {{ currentMetrics.ram.toFixed(1) }}%
+                 <div class="text-3xl font-bold font-mono mb-4" :class="{ 'text-red-500': alertStates.ram }">
+                    {{ currentMetrics.ram.toFixed(1) }}<span class="text-sm text-gray-500 ml-1">%</span>
                 </div>
                  <LineChart
-                    class="h-[80px] mt-2"
+                    class="h-[100px]"
                     :data="filteredMetrics"
                     index="timestamp"
                     :categories="['ram']"
@@ -717,16 +818,20 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
                     :options="commonChartOptions"
                 />
              </UCard>
-             <UCard :ui="{ body: 'p-4' }">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm text-gray-400">Disk Usage</span>
-                    <UIcon name="i-heroicons-circle-stack" class="w-4 h-4 text-orange-500" />
+
+             <!-- Disk Card -->
+             <UCard :ui="{ body: 'p-6' }" class="transition-all duration-300">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <UIcon name="i-heroicons-circle-stack" class="w-5 h-5" />
+                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">Disk</span>
+                    </div>
                 </div>
-                 <div class="text-2xl font-bold font-mono">
-                    {{ currentMetrics.disk.toFixed(1) }}%
+                 <div class="text-3xl font-bold font-mono mb-4">
+                    {{ currentMetrics.disk.toFixed(1) }}<span class="text-sm text-gray-500 ml-1">%</span>
                 </div>
                  <LineChart
-                    class="h-[80px] mt-2"
+                    class="h-[100px]"
                     :data="filteredMetrics"
                     index="timestamp"
                     :categories="['disk']"
@@ -734,21 +839,30 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
                     :options="commonChartOptions"
                 />
              </UCard>
-              <UCard :ui="{ body: 'p-4' }">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="text-sm text-gray-400">Network</span>
-                    <UIcon name="i-heroicons-globe-alt" class="w-4 h-4 text-blue-500" />
-                </div>
-                 <div class="flex flex-col gap-1">
-                    <div class="text-xs font-mono flex justify-between">
-                         <span class="text-blue-400">↑ {{ currentMetrics.netUp.toFixed(1) }} KB/s</span>
+
+             <!-- Network Card -->
+               <UCard :ui="{ body: 'p-6' }" :class="{ 'ring-2 ring-red-500 bg-red-500/5': alertStates.net }" class="transition-all duration-300">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <UIcon name="i-heroicons-globe-alt" :class="['w-5 h-5', alertStates.net ? 'text-red-500 animate-pulse' : '']" />
+                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">Network</span>
                     </div>
-                     <div class="text-xs font-mono flex justify-between">
-                         <span class="text-green-400">↓ {{ currentMetrics.netDown.toFixed(1) }} KB/s</span>
+                    <div class="flex items-center gap-2">
+                        <UInputNumber v-if="enabledAlerts.net" v-model="thresholds.net" size="xs" class="w-32" />
+                        <span v-if="enabledAlerts.net" class="text-xs font-bold text-gray-400 uppercase tracking-widest">KB/s</span>
+                        <USwitch v-model="enabledAlerts.net" size="sm" color="error" description="Enable Alert" />
+                    </div>
+                </div>
+                 <div class="flex flex-col gap-1 mb-4">
+                    <div class="text-sm font-mono flex justify-between font-bold">
+                         <span :class="alertStates.net ? 'text-red-400' : 'text-blue-400'">↑ {{ currentMetrics.netUp.toFixed(1) }} <span class="text-[10px] opacity-70">KB/s</span></span>
+                    </div>
+                     <div class="text-sm font-mono flex justify-between font-bold">
+                         <span :class="alertStates.net ? 'text-red-400' : 'text-green-400'">↓ {{ currentMetrics.netDown.toFixed(1) }} <span class="text-[10px] opacity-70">KB/s</span></span>
                     </div>
                 </div>
                  <LineChart
-                    class="h-[60px] mt-2"
+                    class="h-[80px]"
                     :data="filteredMetrics"
                     index="timestamp"
                     :categories="['netUp', 'netDown']"
@@ -931,27 +1045,27 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
             </UCard>
 
             <!-- Connection Logs Card (spans 2 cols on lg) -->
-            <UCard class="md:col-span-2 lg:col-span-2 flex flex-col min-h-[200px]" :ui="{ body: 'flex-1 p-0 overflow-hidden' }">
+            <UCard class="md:col-span-2 lg:col-span-2 flex flex-col min-h-[250px]" :ui="{ body: 'p-0 flex-1 overflow-hidden' }">
                 <template #header>
                     <div class="flex items-center gap-2">
                         <UIcon name="i-heroicons-list-bullet" class="text-green-400" />
-                        <span class="text-sm font-semibold">Connection Logs</span>
+                        <span class="text-sm font-bold uppercase tracking-widest text-gray-400">Connection Logs</span>
                     </div>
                 </template>
                 <div class="flex-1 overflow-y-auto">
-                    <UTable :data="logs" :columns="logColumns" :ui="{ td: 'px-3 py-2', th: 'px-3 py-2' }">
-                        <template #type-cell="{ row }">
+                    <UTable :rows="logs" :columns="logColumns" :ui="{ td: 'px-6 py-3', th: 'px-6 py-3' }">
+                        <template #type-data="{ row }">
                             <UBadge 
                                 :color="row.original.type === 'connect' ? 'success' : row.original.type === 'reconnect' ? 'warning' : 'error'"
                                 variant="subtle"
-                                size="xs"
-                                class="text-[10px]"
+                                size="sm"
+                                class="font-bold tracking-widest px-2"
                             >
                                 {{ row.original.type.toUpperCase() }}
                             </UBadge>
                         </template>
-                        <template #timestamp-cell="{ row }">
-                            <span class="text-[10px] text-gray-500 font-mono">{{ formatRelativeTime(row.original.timestamp) }}</span>
+                        <template #timestamp-data="{ row }">
+                            <span class="text-xs text-gray-400 font-mono">{{ formatRelativeTime(row.original.timestamp) }}</span>
                         </template>
                     </UTable>
                 </div>
