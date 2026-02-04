@@ -642,6 +642,7 @@ const server = serve<WebSocketData>({
                             upsertDevice(updates);
                         }
                     } else if (msg.type === "metrics") {
+                        console.log("Metrics ", msg);
                         if (msg.data) {
                             // Persist metrics
                             console.log("Saving metrics for device ", id);
