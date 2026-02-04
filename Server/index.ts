@@ -25,24 +25,38 @@ async function loadDevices() {
 }
 
 // Log device event
-async function logDeviceEvent(deviceId: string, type: "connect" | "disconnect" | "reconnect", message?: string) {
+async function logDeviceEvent(
+    deviceId: string,
+    type: "connect" | "disconnect" | "reconnect",
+    message?: string,
+) {
     try {
-        db.insert(deviceLogs).values({
-            deviceId,
-            type,
-            message,
-            timestamp: new Date(),
-        }).run();
-        console.log(`[log] ${deviceId} ${type}${message ? `: ${message}` : ""}`);
+        db.insert(deviceLogs)
+            .values({
+                deviceId,
+                type,
+                message,
+                timestamp: new Date(),
+            })
+            .run();
+        console.log(
+            `[log] ${deviceId} ${type}${message ? `: ${message}` : ""}`,
+        );
     } catch (e) {
         console.error("Failed to log device event:", e);
     }
 }
 
 // Upsert device to SQLite
-async function upsertDevice(device: Partial<Device> & { id: string, userId?: string | null }) {
+async function upsertDevice(
+    device: Partial<Device> & { id: string; userId?: string | null },
+) {
     try {
-        const existing = db.select().from(devices).where(eq(devices.id, device.id)).get();
+        const existing = db
+            .select()
+            .from(devices)
+            .where(eq(devices.id, device.id))
+            .get();
         if (existing) {
             db.update(devices)
                 .set({
@@ -55,7 +69,11 @@ async function upsertDevice(device: Partial<Device> & { id: string, userId?: str
             // Use provided userId or fallback to the first user found in the DB
             let targetUserId = device.userId;
             if (!targetUserId) {
-                const firstUser = db.select({ id: devices.userId }).from(sql`user`).limit(1).get() as { id: string } | undefined;
+                const firstUser = db
+                    .select({ id: devices.userId })
+                    .from(sql`user`)
+                    .limit(1)
+                    .get() as { id: string } | undefined;
                 targetUserId = firstUser?.id;
             }
 
@@ -74,9 +92,13 @@ async function upsertDevice(device: Partial<Device> & { id: string, userId?: str
                         updatedAt: new Date(),
                     })
                     .run();
-                console.log(`[device] Registered ${device.id} to user ${targetUserId}`);
+                console.log(
+                    `[device] Registered ${device.id} to user ${targetUserId}`,
+                );
             } else {
-                console.error(`[device] Cannot register ${device.id}: No users found in database.`);
+                console.error(
+                    `[device] Cannot register ${device.id}: No users found in database.`,
+                );
             }
         }
     } catch (e) {
@@ -98,36 +120,36 @@ type WebSocketData = {
 };
 
 const welcomingMessage = {
-type: "input",
-data:
-    `@echo off & cls & echo. & echo. & echo. & echo. & ` +
-    `echo          M                       LM          & ` +
-    `echo          MML                    MMM          & ` +
-    `echo          MNMML                MMOUM          & ` +
-    `echo          MW UMM             LMN  VM          & ` +
-    `echo          MR   NMM         MMMZ   RM          & ` +
-    `echo          MPZ  UMMMMMMMMMMMMMMMN  OM          & ` +
-    `echo          MMMMMMMMMMMMMMMMMMMMMMMOMM          & ` +
-    `echo          MO TMMMMMMMMMMMMMMMMMM  OM          & ` +
-    `echo          MO  ZMMMMMMMMMMMMMMMM   OM          & ` +
-    `echo          MO  ZNMMMMMMMMMMMMMMM   OM          & ` +
-    `echo          MOZ OMMMMMMMMMMMMMMMMMX OL          & ` +
-    `echo          NOUMMMMMMMMMMMMMMMMMMMMMMM          & ` +
-    `echo           MMMMMMMMMMMMMMMMMMMMMMMM           & ` +
-    `echo            MMMMMMMMMMMMMMMMMMMMMM            & ` +
-    `echo             MMMMMMMMMMMMMMMMMMMM             & ` +
-    `echo               MMMMMMMMMMMMMMMM               & ` +
-    `echo                  MMMMMMMMMM                  & ` +
-    `echo. & echo. & echo. & ` +
-    `echo ============================================ & ` +
-    `echo                     Lynx & ` +
-    `echo ============================================ & ` +
-    `echo   Status    : Connected & ` +
-    `echo. & ` +
-    `echo   Type 'help' to list available commands & ` +
-    `echo ============================================ & ` +
-    `echo on\r`,
-}
+    type: "input",
+    data:
+        `@echo off & cls & echo. & echo. & echo. & echo. & ` +
+        `echo          M                       LM          & ` +
+        `echo          MML                    MMM          & ` +
+        `echo          MNMML                MMOUM          & ` +
+        `echo          MW UMM             LMN  VM          & ` +
+        `echo          MR   NMM         MMMZ   RM          & ` +
+        `echo          MPZ  UMMMMMMMMMMMMMMMN  OM          & ` +
+        `echo          MMMMMMMMMMMMMMMMMMMMMMMOMM          & ` +
+        `echo          MO TMMMMMMMMMMMMMMMMMM  OM          & ` +
+        `echo          MO  ZMMMMMMMMMMMMMMMM   OM          & ` +
+        `echo          MO  ZNMMMMMMMMMMMMMMM   OM          & ` +
+        `echo          MOZ OMMMMMMMMMMMMMMMMMX OL          & ` +
+        `echo          NOUMMMMMMMMMMMMMMMMMMMMMMM          & ` +
+        `echo           MMMMMMMMMMMMMMMMMMMMMMMM           & ` +
+        `echo            MMMMMMMMMMMMMMMMMMMMMM            & ` +
+        `echo             MMMMMMMMMMMMMMMMMMMM             & ` +
+        `echo               MMMMMMMMMMMMMMMM               & ` +
+        `echo                  MMMMMMMMMM                  & ` +
+        `echo. & echo. & echo. & ` +
+        `echo ============================================ & ` +
+        `echo                     Lynx & ` +
+        `echo ============================================ & ` +
+        `echo   Status    : Connected & ` +
+        `echo. & ` +
+        `echo   Type 'help' to list available commands & ` +
+        `echo ============================================ & ` +
+        `echo on\r`,
+};
 const server = serve<WebSocketData>({
     port: 9991,
     async fetch(req, server) {
@@ -136,10 +158,12 @@ const server = serve<WebSocketData>({
         if (url.pathname === "/api/devices" && req.method === "GET") {
             try {
                 const dbDevices = db.select().from(devices).all();
-                const deviceList = dbDevices.map(d => ({
+                const deviceList = dbDevices.map((d) => ({
                     ...d,
-                    status: (deviceSockets.has(d.id) ? "online" : "offline") as "online" | "offline",
-                    lastSeen: d.lastSeen || new Date(d.updatedAt)
+                    status: (deviceSockets.has(d.id) ? "online" : "offline") as
+                        | "online"
+                        | "offline",
+                    lastSeen: d.lastSeen || new Date(d.updatedAt),
                 }));
                 return new Response(JSON.stringify(deviceList), {
                     headers: {
@@ -148,134 +172,280 @@ const server = serve<WebSocketData>({
                     },
                 });
             } catch (e) {
-                return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                return new Response(
+                    JSON.stringify({ error: "Database error" }),
+                    {
+                        status: 500,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    },
+                );
             }
         }
 
         if (url.pathname.startsWith("/api/devices/")) {
             const parts = url.pathname.split("/");
-            
+
             // Screenshots endpoint: /api/devices/{id}/screenshots
-            if (parts.length === 5 && parts[4] === "screenshots" && req.method === "GET") {
+            if (
+                parts.length === 5 &&
+                parts[4] === "screenshots" &&
+                req.method === "GET"
+            ) {
                 const deviceId = parts[3];
                 const imagesDir = `images/${deviceId}`;
                 try {
                     const files = await readdir(imagesDir);
-                    const screenshots = files.filter((f: string) => f.endsWith(".png")).sort().reverse(); 
+                    const screenshots = files
+                        .filter((f: string) => f.endsWith(".png"))
+                        .sort()
+                        .reverse();
                     return new Response(JSON.stringify(screenshots), {
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
                     });
                 } catch {
-                     return new Response(JSON.stringify([]), {
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                    return new Response(JSON.stringify([]), {
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
                     });
                 }
             }
 
             // GET /api/devices/:id/logs
-            if (parts.length === 5 && parts[4] === "logs" && req.method === "GET") {
+            if (
+                parts.length === 5 &&
+                parts[4] === "logs" &&
+                req.method === "GET"
+            ) {
                 const deviceId = parts[3];
-                if (!deviceId) return new Response("Device ID missing", { status: 400 });
+                if (!deviceId)
+                    return new Response("Device ID missing", { status: 400 });
                 try {
-                    const logs = db.select().from(deviceLogs)
+                    const logs = db
+                        .select()
+                        .from(deviceLogs)
                         .where(eq(deviceLogs.deviceId, deviceId))
                         .orderBy(sql`${deviceLogs.timestamp} DESC`)
                         .limit(50)
                         .all();
                     return new Response(JSON.stringify(logs), {
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
                     });
                 } catch (e) {
-                    return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                    return new Response(
+                        JSON.stringify({ error: "Database error" }),
+                        {
+                            status: 500,
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Access-Control-Allow-Origin": "*",
+                            },
+                        },
+                    );
                 }
             }
 
             // GET /api/devices/:id/metrics
-            if (parts.length === 5 && parts[4] === "metrics" && req.method === "GET") {
+            if (
+                parts.length === 5 &&
+                parts[4] === "metrics" &&
+                req.method === "GET"
+            ) {
                 const deviceId = parts[3];
-                if (!deviceId) return new Response("Device ID missing", { status: 400 });
+                if (!deviceId)
+                    return new Response("Device ID missing", { status: 400 });
                 try {
                     // Get last 24h metrics
-                    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-                    const metrics = db.select().from(deviceMetrics)
+                    const oneDayAgo = new Date(
+                        Date.now() - 24 * 60 * 60 * 1000,
+                    );
+                    const metrics = db
+                        .select()
+                        .from(deviceMetrics)
                         .where(
-                            sql`${deviceMetrics.deviceId} = ${deviceId} AND ${deviceMetrics.timestamp} > ${oneDayAgo}`
+                            sql`${deviceMetrics.deviceId} = ${deviceId} AND ${deviceMetrics.timestamp} > ${oneDayAgo}`,
                         )
                         .orderBy(sql`${deviceMetrics.timestamp} ASC`)
                         .all();
-                        
+
                     // Downsample
-                    const result = metrics.length > 200 
-                        ? metrics.filter((_, i) => i % Math.ceil(metrics.length / 200) === 0)
-                        : metrics;
+                    const result =
+                        metrics.length > 200
+                            ? metrics.filter(
+                                  (_, i) =>
+                                      i % Math.ceil(metrics.length / 200) === 0,
+                              )
+                            : metrics;
 
                     return new Response(JSON.stringify(result), {
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
                     });
                 } catch (e) {
-                    return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                    return new Response(
+                        JSON.stringify({ error: "Database error" }),
+                        {
+                            status: 500,
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Access-Control-Allow-Origin": "*",
+                            },
+                        },
+                    );
                 }
             }
 
             const id = parts[3] || ""; // /api/devices/:id
-            
+
             // GET /api/devices/:id
             if (parts.length === 4 && req.method === "GET") {
                 try {
-                    const device = db.select().from(devices).where(eq(devices.id, id)).get();
+                    const device = db
+                        .select()
+                        .from(devices)
+                        .where(eq(devices.id, id))
+                        .get();
                     if (!device) {
-                        return new Response(JSON.stringify({ error: "Device not found" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                        return new Response(
+                            JSON.stringify({ error: "Device not found" }),
+                            {
+                                status: 404,
+                                headers: {
+                                    "Content-Type": "application/json",
+                                    "Access-Control-Allow-Origin": "*",
+                                },
+                            },
+                        );
                     }
                     const enriched = {
                         ...device,
-                        status: (deviceSockets.has(device.id) ? "online" : "offline") as "online" | "offline",
-                        lastSeen: device.lastSeen || new Date(device.updatedAt)
+                        status: (deviceSockets.has(device.id)
+                            ? "online"
+                            : "offline") as "online" | "offline",
+                        lastSeen: device.lastSeen || new Date(device.updatedAt),
                     };
                     return new Response(JSON.stringify(enriched), {
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
                     });
                 } catch (e) {
-                    return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                    return new Response(
+                        JSON.stringify({ error: "Database error" }),
+                        {
+                            status: 500,
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Access-Control-Allow-Origin": "*",
+                            },
+                        },
+                    );
                 }
             }
 
             // POST /api/devices/:id - Update Device
             if (req.method === "POST") {
                 try {
-                    const device = db.select().from(devices).where(eq(devices.id, id)).get();
+                    const device = db
+                        .select()
+                        .from(devices)
+                        .where(eq(devices.id, id))
+                        .get();
                     if (!device) {
-                         return new Response(JSON.stringify({ error: "Device not found" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                        return new Response(
+                            JSON.stringify({ error: "Device not found" }),
+                            {
+                                status: 404,
+                                headers: {
+                                    "Content-Type": "application/json",
+                                    "Access-Control-Allow-Origin": "*",
+                                },
+                            },
+                        );
                     }
-                    
-                    const body = await req.json() as any;
+
+                    const body = (await req.json()) as any;
                     const updates: Partial<Device> = {};
                     if (body.name) updates.name = body.name;
                     if (body.group !== undefined) updates.group = body.group;
 
                     // Persist changes
                     await upsertDevice({ id, ...updates });
-                    
-                    return new Response(JSON.stringify({ ...device, ...updates }), {
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-                    });
+
+                    return new Response(
+                        JSON.stringify({ ...device, ...updates }),
+                        {
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Access-Control-Allow-Origin": "*",
+                            },
+                        },
+                    );
                 } catch (e) {
-                    return new Response(JSON.stringify({ error: "Invalid JSON or DB error" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                    return new Response(
+                        JSON.stringify({ error: "Invalid JSON or DB error" }),
+                        {
+                            status: 400,
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Access-Control-Allow-Origin": "*",
+                            },
+                        },
+                    );
                 }
             }
 
             // DELETE /api/devices/:id - Delete Device
             if (req.method === "DELETE") {
                 try {
-                    const existing = db.select().from(devices).where(eq(devices.id, id)).get();
+                    const existing = db
+                        .select()
+                        .from(devices)
+                        .where(eq(devices.id, id))
+                        .get();
                     if (!existing) {
-                         return new Response(JSON.stringify({ error: "Device not found" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                        return new Response(
+                            JSON.stringify({ error: "Device not found" }),
+                            {
+                                status: 404,
+                                headers: {
+                                    "Content-Type": "application/json",
+                                    "Access-Control-Allow-Origin": "*",
+                                },
+                            },
+                        );
                     }
                     db.delete(devices).where(eq(devices.id, id)).run();
                     return new Response(JSON.stringify({ success: true }), {
-                        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
                     });
-                } catch(e) {
-                     return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+                } catch (e) {
+                    return new Response(
+                        JSON.stringify({ error: "Database error" }),
+                        {
+                            status: 500,
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Access-Control-Allow-Origin": "*",
+                            },
+                        },
+                    );
                 }
             }
         }
@@ -342,17 +512,25 @@ const server = serve<WebSocketData>({
                 await upsertDevice(updates);
 
                 // Get the final device state (either existing or newly created)
-                const finalDevice = db.select().from(devices).where(eq(devices.id, id)).get();
+                const finalDevice = db
+                    .select()
+                    .from(devices)
+                    .where(eq(devices.id, id))
+                    .get();
                 if (!finalDevice) {
-                    console.warn(`[device] Failed to register/find device: ${id}`);
+                    console.warn(
+                        `[device] Failed to register/find device: ${id}`,
+                    );
                     ws.close(1008, "Registration failed");
                     return;
                 }
 
                 // Sync with in-memory registry
-                const wasOffline = !deviceRegistry.get(id) || deviceRegistry.get(id)?.status === "offline";
+                const wasOffline =
+                    !deviceRegistry.get(id) ||
+                    deviceRegistry.get(id)?.status === "offline";
                 deviceRegistry.set(id, { ...finalDevice, status: "online" });
-                
+
                 // Log event
                 await logDeviceEvent(id, wasOffline ? "connect" : "reconnect");
 
@@ -408,12 +586,15 @@ const server = serve<WebSocketData>({
                             console.log("Sending test command to device");
                             const deviceWs = deviceSockets.get(targetDeviceId);
                             if (deviceWs) {
-                                deviceWs.send(
-                                    JSON.stringify(welcomingMessage),
-                                );
+                                deviceWs.send(JSON.stringify(welcomingMessage));
                             }
                         }
-                    } else if (msg.type === "input" || msg.type === "resize" || msg.type === "action" || msg.type === "command") {
+                    } else if (
+                        msg.type === "input" ||
+                        msg.type === "resize" ||
+                        msg.type === "action" ||
+                        msg.type === "command"
+                    ) {
                         const targetDeviceId = ws.data.deviceId;
                         if (targetDeviceId) {
                             const deviceWs = deviceSockets.get(targetDeviceId);
@@ -463,19 +644,24 @@ const server = serve<WebSocketData>({
                     } else if (msg.type === "metrics") {
                         if (msg.data) {
                             // Persist metrics
-                           try {
-                                db.insert(deviceMetrics).values({
-                                    deviceId: id,
-                                    cpuUsage: Math.round(msg.data.cpu),
-                                    ramUsage: Math.round(msg.data.ram),
-                                    diskUsage: Math.round(msg.data.disk),
-                                    networkUp: Math.round(msg.data.netUp),
-                                    networkDown: Math.round(msg.data.netDown),
-                                    timestamp: new Date(),
-                                }).run();
-                           } catch (e) {
-                               console.error("Failed to save metrics:", e);
-                           }
+                            console.log("Saving metrics for device ", id);
+                            try {
+                                db.insert(deviceMetrics)
+                                    .values({
+                                        deviceId: id,
+                                        cpuUsage: Math.round(msg.data.cpu),
+                                        ramUsage: Math.round(msg.data.ram),
+                                        diskUsage: Math.round(msg.data.disk),
+                                        networkUp: Math.round(msg.data.netUp),
+                                        networkDown: Math.round(
+                                            msg.data.netDown,
+                                        ),
+                                        timestamp: new Date(),
+                                    })
+                                    .run();
+                            } catch (e) {
+                                console.error("Failed to save metrics:", e);
+                            }
 
                             const subs = subscriptions.get(id);
                             if (subs) {
@@ -491,22 +677,26 @@ const server = serve<WebSocketData>({
                             }
                         }
                     } else if (msg.type === "screenshot" && msg.data) {
-                         const buffer = Buffer.from(msg.data, "base64");
-                         const timestamp = Date.now();
-                         const dir = `images/${id}`;
-                         await Bun.write(`${dir}/${timestamp}.png`, buffer);
-                         console.log(`[Screenshot] Saved ${dir}/${timestamp}.png`);
+                        const buffer = Buffer.from(msg.data, "base64");
+                        const timestamp = Date.now();
+                        const dir = `images/${id}`;
+                        await Bun.write(`${dir}/${timestamp}.png`, buffer);
+                        console.log(
+                            `[Screenshot] Saved ${dir}/${timestamp}.png`,
+                        );
 
-                         const subs = subscriptions.get(id);
-                         if (subs) {
-                            subs.forEach(client => 
-                                client.send(JSON.stringify({
-                                    type: "screenshot_saved",
-                                    url: `/images/${id}/${timestamp}.png`,
-                                    filename: `${timestamp}.png`
-                                }))
+                        const subs = subscriptions.get(id);
+                        if (subs) {
+                            subs.forEach((client) =>
+                                client.send(
+                                    JSON.stringify({
+                                        type: "screenshot_saved",
+                                        url: `/images/${id}/${timestamp}.png`,
+                                        filename: `${timestamp}.png`,
+                                    }),
+                                ),
                             );
-                         }
+                        }
                     }
                 }
             } catch (err) {
