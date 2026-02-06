@@ -16,6 +16,7 @@ interface FileItem {
 
 const currentPath = ref("C:\\");
 const files = ref<FileItem[]>([]);
+const drives = ref<string[]>([]);
 const isLoading = ref(false);
 const error = ref<string | null>(null);
 const pendingRequests = new Map<string, (data: any) => void>();
@@ -101,6 +102,19 @@ function handleFsMessage(msg: any) {
 
 // Expose handler to parent
 defineExpose({ handleFsMessage });
+
+async function fetchDrives() {
+    try {
+        const result = await sendFsCommand("drives");
+        drives.value = result.data || [];
+        if (drives.value.length > 0 && !drives.value.includes(currentPath.value.substring(0, 3))) {
+            const firstDrive = drives.value[0];
+            if (firstDrive) currentPath.value = firstDrive;
+        }
+    } catch (e: any) {
+        console.error("Failed to fetch drives:", e);
+    }
+}
 
 async function fetchDirectory(path: string) {
     isLoading.value = true;
@@ -338,10 +352,13 @@ function formatDate(timestamp: number): string {
     return new Date(timestamp).toLocaleString();
 }
 
-// Watch for connection and fetch initial directory
-watch(() => props.status, (newStatus) => {
-    if (newStatus === "connected" && files.value.length === 0) {
-        fetchDirectory(currentPath.value);
+// Watch for connection and fetch initial data
+watch(() => props.status, async (newStatus) => {
+    if (newStatus === "connected") {
+        await fetchDrives();
+        if (files.value.length === 0) {
+            fetchDirectory(currentPath.value);
+        }
     }
 }, { immediate: true });
 </script>
@@ -350,6 +367,15 @@ watch(() => props.status, (newStatus) => {
     <div class="flex flex-col h-full">
         <!-- Toolbar -->
         <div class="flex items-center gap-2 p-3 border-b border-gray-800">
+            <!-- Drive Selector -->
+            <USelect
+                v-model="currentPath"
+                :items="drives"
+                class="w-20"
+                size="xs"
+                @update:model-value="fetchDirectory($event)"
+            />
+
             <UButton
                 icon="i-heroicons-arrow-up"
                 variant="ghost"

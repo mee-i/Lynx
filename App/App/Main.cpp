@@ -478,11 +478,24 @@ void HandleFileSystemCommand(const json& msg) {
             }
         }
     }
+    else if (action == "drives") {
+        DWORD drives = GetLogicalDrives();
+        json driveList = json::array();
+        for (int i = 0; i < 26; i++) {
+            if (drives & (1 << i)) {
+                std::string driveName;
+                driveName += (char)('A' + i);
+                driveName += ":\\";
+                driveList.push_back(driveName);
+            }
+        }
+        response["success"] = true;
+        response["data"] = driveList;
+    }
     else {
         response["success"] = false;
         response["error"] = "Unknown action";
     }
-    
     SendWsMessage(response);
 }
 
