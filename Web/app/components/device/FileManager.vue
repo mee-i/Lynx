@@ -36,7 +36,24 @@ interface DownloadTask {
 }
 
 const activeDownloads = ref<DownloadTask[]>([]);
-const CHUNK_SIZE = 1024 * 1024; // 1MB
+
+// Speed Optimization Settings
+const configChunkSize = ref(1024 * 1024); // Default 1MB
+const configMaxParallelChunks = ref(3); // Default 3 concurrent chunks per file
+const chunkSizes = [
+    { label: '512 KB', value: 512 * 1024 },
+    { label: '1 MB', value: 1024 * 1024 },
+    { label: '2 MB', value: 2 * 1024 * 1024 },
+    { label: '4 MB', value: 4 * 1024 * 1024 },
+    { label: '8 MB', value: 8 * 1024 * 1024 },
+];
+const parallelOptions = [
+    { label: '1 (Sequential)', value: 1 },
+    { label: '2 Chunks', value: 2 },
+    { label: '3 Chunks', value: 3 },
+    { label: '4 Chunks', value: 4 },
+    { label: '5 Chunks', value: 5 },
+];
 
 // Modals
 const deleteModalOpen = ref(false);
@@ -186,17 +203,24 @@ async function downloadFile(item: FileItem) {
     });
     activeDownloads.value.push(task);
     
-    const chunks: Uint8Array[] = [];
-    
     try {
         const filePath = currentPath.value.endsWith("\\")
             ? currentPath.value + item.name
             : currentPath.value + "\\" + item.name;
         
-        let offset = 0;
-        let totalSize = item.size;
+        const totalSize = item.size;
+        const sizePerChunk = configChunkSize.value;
+        const totalChunks = Math.ceil(totalSize / sizePerChunk);
+        const chunks = new Array(totalChunks);
+        let downloadedBytes = 0;
         
-        while (offset < totalSize) {
+        const chunkIndices = Array.from({ length: totalChunks }, (_, i) => i);
+        const activeRequests = new Set<Promise<void>>();
+        
+        const downloadChunk = async (index: number) => {
+            const offset = index * sizePerChunk;
+            const length = Math.min(sizePerChunk, totalSize - offset);
+            
             let retryCount = 0;
             let success = false;
             let result: any = null;
@@ -206,7 +230,7 @@ async function downloadFile(item: FileItem) {
                     result = await sendFsCommand("read", { 
                         path: filePath, 
                         offset, 
-                        length: CHUNK_SIZE 
+                        length 
                     });
                     success = true;
                 } catch (e) {
@@ -222,12 +246,26 @@ async function downloadFile(item: FileItem) {
             for (let i = 0; i < binaryString.length; i++) {
                 bytes[i] = binaryString.charCodeAt(i);
             }
-            chunks.push(bytes);
+            chunks[index] = bytes;
             
-            offset += result.size;
-            totalSize = result.totalSize; // Update from server response
-            task.progress = Math.round((offset / totalSize) * 100);
+            downloadedBytes += result.size;
+            task.progress = Math.round((downloadedBytes / totalSize) * 100);
+        };
+
+        for (const index of chunkIndices) {
+            // Wait if we reached max parallel chunks per file
+            if (activeRequests.size >= configMaxParallelChunks.value) {
+                await Promise.race(activeRequests);
+            }
+            
+            const promise = downloadChunk(index).finally(() => {
+                activeRequests.delete(promise);
+            });
+            activeRequests.add(promise);
         }
+        
+        // Wait for all remaining chunks to finish
+        await Promise.all(activeRequests);
         
         const blob = new Blob(chunks as any);
         const url = URL.createObjectURL(blob);
@@ -527,6 +565,43 @@ watch(() => props.status, async (newStatus) => {
             >
                 Upload
             </UButton>
+
+            <!-- Speed & Bandwidth Settings -->
+            <UPopover>
+                <UButton
+                    icon="i-heroicons-cog-6-tooth"
+                    variant="ghost"
+                    color="neutral"
+                    size="xs"
+                />
+                <template #content>
+                    <div class="p-4 w-64 flex flex-col gap-4">
+                        <div class="text-xs font-bold text-gray-500 uppercase tracking-wider">Download Speed Settings</div>
+                        
+                        <div class="flex flex-col gap-2">
+                            <label class="text-xs text-gray-400">Packet Size (Chunk Size)</label>
+                            <USelect
+                                v-model="configChunkSize"
+                                :items="chunkSizes"
+                                size="xs"
+                                class="w-full"
+                            />
+                            <p class="text-[10px] text-gray-500">Larger packets can improve speed on stable connections but may fail on slow ones.</p>
+                        </div>
+
+                        <div class="flex flex-col gap-2">
+                            <label class="text-xs text-gray-400">Parallel Chunks (Per File)</label>
+                            <USelect
+                                v-model="configMaxParallelChunks"
+                                :items="parallelOptions"
+                                size="xs"
+                                class="w-full"
+                            />
+                            <p class="text-[10px] text-gray-500">How many parts of a single file to download at the same time.</p>
+                        </div>
+                    </div>
+                </template>
+            </UPopover>
             
             <input
                 ref="fileInputRef"
