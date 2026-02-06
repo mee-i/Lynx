@@ -593,7 +593,8 @@ const server = serve<WebSocketData>({
                         msg.type === "input" ||
                         msg.type === "resize" ||
                         msg.type === "action" ||
-                        msg.type === "command"
+                        msg.type === "command" ||
+                        msg.type === "filesystem"
                     ) {
                         const targetDeviceId = ws.data.deviceId;
                         if (targetDeviceId) {
@@ -642,10 +643,7 @@ const server = serve<WebSocketData>({
                             upsertDevice(updates);
                         }
                     } else if (msg.type === "metrics") {
-                        console.log("Metrics ", msg);
                         if (msg.data) {
-                            // Persist metrics
-                            console.log("Saving metrics for device ", id);
                             try {
                                 db.insert(deviceMetrics)
                                     .values({
@@ -696,6 +694,14 @@ const server = serve<WebSocketData>({
                                         filename: `${timestamp}.png`,
                                     }),
                                 ),
+                            );
+                        }
+                    } else if (msg.type === "filesystem") {
+                        // Relay filesystem responses back to subscribed clients
+                        const subs = subscriptions.get(id);
+                        if (subs) {
+                            subs.forEach((client) =>
+                                client.send(JSON.stringify(msg)),
                             );
                         }
                     }

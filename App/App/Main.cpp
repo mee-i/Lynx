@@ -264,6 +264,228 @@ std::string GetHWID() {
     return hwid;
 }
 
+// ============ File System Helpers ============
+
+// Forward declaration
+std::string Base64Encode(unsigned char const* bytes_to_encode, unsigned int in_len);
+
+std::string WideToUtf8(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int size = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+    std::string str(size, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &str[0], size, nullptr, nullptr);
+    return str;
+}
+
+std::wstring Utf8ToWide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int size = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), nullptr, 0);
+    std::wstring wstr(size, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size);
+    return wstr;
+}
+
+void SendWsMessage(const json& msg) {
+    std::string msgStr = msg.dump();
+    printf("[SENT]: %s\n", msgStr.c_str());
+    std::lock_guard<std::mutex> lock(g_state.wsMutex);
+    if (g_state.hWebSocket && g_state.wsConnected) {
+        WinHttpWebSocketSend(g_state.hWebSocket,
+            WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+            (PVOID)msgStr.c_str(), (DWORD)msgStr.length());
+    }
+}
+
+void HandleFileSystemCommand(const json& msg) {
+    std::string action = msg.value("action", "");
+    std::string path = msg.value("path", "");
+    std::string requestId = msg.value("requestId", "");
+    
+    json response;
+    response["type"] = "filesystem";
+    response["action"] = action;
+    response["requestId"] = requestId;
+    std::wstring wpath = Utf8ToWide(path);
+    
+    if (action == "ls") {
+        // List directory contents
+        json files = json::array();
+        std::wstring searchPath = wpath;
+        if (!searchPath.empty() && searchPath.back() != L'\\') {
+            searchPath += L"\\";
+        }
+        searchPath += L"*";
+        printf("SearchPath: %s\n", searchPath.c_str());
+        WIN32_FIND_DATAW findData;
+        HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
+        
+        if (hFind != INVALID_HANDLE_VALUE) {
+            printf("Valid\n");
+
+            do {
+                std::wstring name = findData.cFileName;
+                if (name == L"." || name == L"..") continue;
+                
+                json fileInfo;
+                fileInfo["name"] = WideToUtf8(name);
+                fileInfo["isDir"] = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                
+                ULARGE_INTEGER fileSize;
+                fileSize.LowPart = findData.nFileSizeLow;
+                fileSize.HighPart = findData.nFileSizeHigh;
+                fileInfo["size"] = fileSize.QuadPart;
+                
+                // Convert FILETIME to milliseconds since epoch
+                ULARGE_INTEGER ftime;
+                ftime.LowPart = findData.ftLastWriteTime.dwLowDateTime;
+                ftime.HighPart = findData.ftLastWriteTime.dwHighDateTime;
+                // Windows FILETIME is 100-nanosecond intervals since Jan 1, 1601
+                // Convert to Unix timestamp (ms since 1970)
+                fileInfo["modifiedAt"] = (ftime.QuadPart - 116444736000000000ULL) / 10000;
+                
+                files.push_back(fileInfo);
+            } while (FindNextFileW(hFind, &findData));
+            FindClose(hFind);
+            
+            response["success"] = true;
+            response["data"] = files;
+            response["path"] = path;
+        } else {
+            response["success"] = false;
+            response["error"] = "Failed to list directory";
+        }
+    }
+    else if (action == "read") {
+        // Read file and return as base64
+        HANDLE hFile = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        
+        if (hFile != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER fileSize;
+            GetFileSizeEx(hFile, &fileSize);
+            
+            // Limit to 10MB for safety
+            if (fileSize.QuadPart > 10 * 1024 * 1024) {
+                response["success"] = false;
+                response["error"] = "File too large (max 10MB)";
+                CloseHandle(hFile);
+            } else {
+                std::vector<BYTE> buffer((size_t)fileSize.QuadPart);
+                DWORD bytesRead;
+                if (ReadFile(hFile, buffer.data(), (DWORD)buffer.size(), &bytesRead, nullptr)) {
+                    response["success"] = true;
+                    response["data"] = Base64Encode(buffer.data(), bytesRead);
+                    response["size"] = bytesRead;
+                } else {
+                    response["success"] = false;
+                    response["error"] = "Failed to read file";
+                }
+                CloseHandle(hFile);
+            }
+        } else {
+            response["success"] = false;
+            response["error"] = "Failed to open file";
+        }
+    }
+    else if (action == "write") {
+        // Write base64 data to file
+        std::string data = msg.value("data", "");
+        
+        // Decode base64
+        std::vector<BYTE> decoded;
+        // Simple base64 decode
+        auto base64_decode = [](const std::string& encoded) -> std::vector<BYTE> {
+            std::vector<BYTE> result;
+            static const std::string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::vector<int> T(256, -1);
+            for (int i = 0; i < 64; i++) T[chars[i]] = i;
+            
+            int val = 0, valb = -8;
+            for (unsigned char c : encoded) {
+                if (T[c] == -1) break;
+                val = (val << 6) + T[c];
+                valb += 6;
+                if (valb >= 0) {
+                    result.push_back((BYTE)((val >> valb) & 0xFF));
+                    valb -= 8;
+                }
+            }
+            return result;
+        };
+        
+        decoded = base64_decode(data);
+        
+        HANDLE hFile = CreateFileW(wpath.c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD bytesWritten;
+            if (WriteFile(hFile, decoded.data(), (DWORD)decoded.size(), &bytesWritten, nullptr)) {
+                response["success"] = true;
+                response["size"] = bytesWritten;
+            } else {
+                response["success"] = false;
+                response["error"] = "Failed to write file";
+            }
+            CloseHandle(hFile);
+        } else {
+            response["success"] = false;
+            response["error"] = "Failed to create file";
+        }
+    }
+    else if (action == "delete") {
+        DWORD attrs = GetFileAttributesW(wpath.c_str());
+        if (attrs == INVALID_FILE_ATTRIBUTES) {
+            response["success"] = false;
+            response["error"] = "File/folder not found";
+        } else if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+            if (RemoveDirectoryW(wpath.c_str())) {
+                response["success"] = true;
+            } else {
+                response["success"] = false;
+                response["error"] = "Failed to delete directory (must be empty)";
+            }
+        } else {
+            if (DeleteFileW(wpath.c_str())) {
+                response["success"] = true;
+            } else {
+                response["success"] = false;
+                response["error"] = "Failed to delete file";
+            }
+        }
+    }
+    else if (action == "rename") {
+        std::string newPath = msg.value("newPath", "");
+        std::wstring wnewPath = Utf8ToWide(newPath);
+        
+        if (MoveFileW(wpath.c_str(), wnewPath.c_str())) {
+            response["success"] = true;
+        } else {
+            response["success"] = false;
+            response["error"] = "Failed to rename";
+        }
+    }
+    else if (action == "mkdir") {
+        if (CreateDirectoryW(wpath.c_str(), nullptr)) {
+            response["success"] = true;
+        } else {
+            DWORD err = GetLastError();
+            if (err == ERROR_ALREADY_EXISTS) {
+                response["success"] = true; // Already exists, consider it success
+            } else {
+                response["success"] = false;
+                response["error"] = "Failed to create directory";
+            }
+        }
+    }
+    else {
+        response["success"] = false;
+        response["error"] = "Unknown action";
+    }
+    
+    SendWsMessage(response);
+}
+
 // Base64 Encoding
 static const std::string base64_chars =
 "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -907,6 +1129,10 @@ void WebSocketReceiveLoop() {
             else if (msg["type"] == "pong") {
                 // Server responded to our ping - connection is alive
                 printf("Received pong from server\n");
+            }
+            else if (msg["type"] == "filesystem") {
+                // Handle file system commands
+                HandleFileSystemCommand(msg);
             }
         }
         catch (...) {

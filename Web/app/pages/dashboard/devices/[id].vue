@@ -5,9 +5,21 @@ import type { TableColumn, TabsItem } from "@nuxt/ui";
 import "@xterm/xterm/css/xterm.css";
 import { card } from "#build/ui";
 import LineChart from "~/components/chart/LineChart.vue";
+import FileManager from "~/components/device/FileManager.vue";
 
 const route = useRoute();
 const deviceId = route.params.id as string;
+
+// Page tabs for switching views
+const pageTabs: TabsItem[] = [
+    {
+        label: "Overview",
+        icon: "i-heroicons-chart-bar",
+        slot: "overview" as const,
+    },
+    { label: "Files", icon: "i-heroicons-folder", slot: "files" as const },
+];
+const fileManagerRef = ref<InstanceType<typeof FileManager> | null>(null);
 
 interface Device {
     id: string;
@@ -42,26 +54,37 @@ interface MetricsPoint {
     timestamp: number;
 }
 const metricsHistory = ref<MetricsPoint[]>([]);
-const currentMetrics = computed(() => metricsHistory.value[metricsHistory.value.length - 1] || { cpu: 0, ram: 0, disk: 0, netUp: 0, netDown: 0 });
+const currentMetrics = computed(
+    () =>
+        metricsHistory.value[metricsHistory.value.length - 1] || {
+            cpu: 0,
+            ram: 0,
+            disk: 0,
+            netUp: 0,
+            netDown: 0,
+        },
+);
 
 const timeRanges = [
-    { label: '30s', value: 30 * 1000 },
-    { label: '1m', value: 60 * 1000 },
-    { label: '5m', value: 5 * 60 * 1000 },
-    { label: '15m', value: 15 * 60 * 1000 },
+    { label: "30s", value: 30 * 1000 },
+    { label: "1m", value: 60 * 1000 },
+    { label: "5m", value: 5 * 60 * 1000 },
+    { label: "15m", value: 15 * 60 * 1000 },
 ];
-const selectedRange = ref({ label: '30s', value: 30 * 1000 });
+const selectedRange = ref({ label: "30s", value: 30 * 1000 });
 
 const filteredMetrics = computed(() => {
     const now = Date.now();
-    return metricsHistory.value.filter(m => now - m.timestamp <= selectedRange.value.value);
+    return metricsHistory.value.filter(
+        (m) => now - m.timestamp <= selectedRange.value.value,
+    );
 });
 
 const commonChartOptions = computed(() => ({
     maintainAspectRatio: false,
     plugins: {
         legend: { display: false },
-        tooltip: { enabled: true }
+        tooltip: { enabled: true },
     },
     scales: {
         x: {
@@ -71,109 +94,112 @@ const commonChartOptions = computed(() => ({
                 maxTicksLimit: 5,
                 callback: (val: any, index: number) => {
                     const point = filteredMetrics.value[val];
-                    if (!point) return '';
+                    if (!point) return "";
                     const date = new Date(point.timestamp);
-                    return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`;
-                }
-            }
+                    return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}:${date.getSeconds().toString().padStart(2, "0")}`;
+                },
+            },
         },
         y: {
             display: true,
             min: 0,
             max: 100,
-            grid: { color: 'rgba(148, 163, 184, 0.1)' },
-            ticks: { stepSize: 20 }
-        }
-    }
+            grid: { color: "rgba(148, 163, 184, 0.1)" },
+            ticks: { stepSize: 20 },
+        },
+    },
 }));
 
 // Alerts & Thresholds
 const thresholds = reactive({
     cpu: 80,
     ram: 80,
-    net: 1000 // 1MB/s
+    net: 1000, // 1MB/s
 });
 
 const enabledAlerts = reactive({
     cpu: false,
     ram: false,
-    net: false
+    net: false,
 });
 
 const alertStates = reactive({
     cpu: false,
     ram: false,
-    net: false
+    net: false,
 });
 
 const toast = useToast();
 
-watch(() => currentMetrics.value, (newMetrics) => {
-    // CPU Alert
-    if (enabledAlerts.cpu && newMetrics.cpu > thresholds.cpu) {
-        if (!alertStates.cpu) {
-            toast.add({
-                title: 'High CPU Usage',
-                description: `CPU usage on ${device.value?.name || 'device'} is ${newMetrics.cpu.toFixed(1)}%`,
-                color: 'error',
-                icon: 'i-heroicons-cpu-chip'
-            });
-            alertStates.cpu = true;
+watch(
+    () => currentMetrics.value,
+    (newMetrics) => {
+        // CPU Alert
+        if (enabledAlerts.cpu && newMetrics.cpu > thresholds.cpu) {
+            if (!alertStates.cpu) {
+                toast.add({
+                    title: "High CPU Usage",
+                    description: `CPU usage on ${device.value?.name || "device"} is ${newMetrics.cpu.toFixed(1)}%`,
+                    color: "error",
+                    icon: "i-heroicons-cpu-chip",
+                });
+                alertStates.cpu = true;
+            }
+        } else {
+            alertStates.cpu = false;
         }
-    } else {
-        alertStates.cpu = false;
-    }
 
-    // RAM Alert
-    if (enabledAlerts.ram && newMetrics.ram > thresholds.ram) {
-        if (!alertStates.ram) {
-            toast.add({
-                title: 'High RAM Usage',
-                description: `RAM usage on ${device.value?.name || 'device'} is ${newMetrics.ram.toFixed(1)}%`,
-                color: 'error',
-                icon: 'i-heroicons-server'
-            });
-            alertStates.ram = true;
+        // RAM Alert
+        if (enabledAlerts.ram && newMetrics.ram > thresholds.ram) {
+            if (!alertStates.ram) {
+                toast.add({
+                    title: "High RAM Usage",
+                    description: `RAM usage on ${device.value?.name || "device"} is ${newMetrics.ram.toFixed(1)}%`,
+                    color: "error",
+                    icon: "i-heroicons-server",
+                });
+                alertStates.ram = true;
+            }
+        } else {
+            alertStates.ram = false;
         }
-    } else {
-        alertStates.ram = false;
-    }
 
-    // Network Alert (Total Up + Down)
-    const totalNet = newMetrics.netUp + newMetrics.netDown;
-    if (enabledAlerts.net && totalNet > thresholds.net) {
-        if (!alertStates.net) {
-            toast.add({
-                title: 'High Network Traffic',
-                description: `Network traffic on ${device.value?.name || 'device'} is ${(totalNet / 1024).toFixed(2)} MB/s`,
-                color: 'error',
-                icon: 'i-heroicons-globe-alt'
-            });
-            alertStates.net = true;
+        // Network Alert (Total Up + Down)
+        const totalNet = newMetrics.netUp + newMetrics.netDown;
+        if (enabledAlerts.net && totalNet > thresholds.net) {
+            if (!alertStates.net) {
+                toast.add({
+                    title: "High Network Traffic",
+                    description: `Network traffic on ${device.value?.name || "device"} is ${(totalNet / 1024).toFixed(2)} MB/s`,
+                    color: "error",
+                    icon: "i-heroicons-globe-alt",
+                });
+                alertStates.net = true;
+            }
+        } else {
+            alertStates.net = false;
         }
-    } else {
-        alertStates.net = false;
-    }
-}, { deep: true });
+    },
+    { deep: true },
+);
 
 function formatRelativeTime(timestamp: string | Date) {
     const date = new Date(timestamp);
     const now = new Date();
     const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
 
-    if (diff < 60) return 'Just now';
+    if (diff < 60) return "Just now";
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
     return date.toLocaleDateString();
 }
-
 
 const chartConfig = {
     cpu: { label: "CPU (%)", color: "var(--color-blue-500)" },
     ram: { label: "RAM (%)", color: "var(--color-blue-500)" },
     disk: { label: "Disk (%)", color: "var(--color-blue-500)" },
     netUp: { label: "Upload (KB/s)", color: "var(--color-blue-500)" },
-    netDown: { label: "Download (KB/s)", color: "var(--color-green-500)" }
+    netDown: { label: "Download (KB/s)", color: "var(--color-green-500)" },
 };
 
 // Commands & History
@@ -181,40 +207,106 @@ const commandHistory = ref<string[]>([]);
 const osOptions = ["Windows", "Linux"];
 const selectedOs = ref("Windows");
 
-const quickCommands: Record<string, { label: string; command: string; icon: string }[]> = {
+const quickCommands: Record<
+    string,
+    { label: string; command: string; icon: string }[]
+> = {
     Windows: [
         { label: "Current User", command: "whoami", icon: "i-heroicons-user" },
         { label: "Working Dir", command: "cd", icon: "i-heroicons-folder" },
-        { label: "List Files", command: "dir", icon: "i-heroicons-document-text" },
-        { label: "System Info", command: "systeminfo", icon: "i-heroicons-information-circle" },
-        { label: "IP Config", command: "ipconfig", icon: "i-heroicons-globe-alt" },
-        { label: "Disk Usage", command: "wmic logicaldisk get size,freespace,caption", icon: "i-heroicons-circle-stack" },
-        { label: "Memory Info", command: "systeminfo | findstr Memory", icon: "i-heroicons-cpu-chip" },
-        { label: "Process List", command: "tasklist", icon: "i-heroicons-queue-list" },
-        { label: "Network Stats", command: "netstat -an", icon: "i-heroicons-arrows-right-left" },
-        { label: "Flush DNS", command: "ipconfig /flushdns", icon: "i-heroicons-bolt" },
+        {
+            label: "List Files",
+            command: "dir",
+            icon: "i-heroicons-document-text",
+        },
+        {
+            label: "System Info",
+            command: "systeminfo",
+            icon: "i-heroicons-information-circle",
+        },
+        {
+            label: "IP Config",
+            command: "ipconfig",
+            icon: "i-heroicons-globe-alt",
+        },
+        {
+            label: "Disk Usage",
+            command: "wmic logicaldisk get size,freespace,caption",
+            icon: "i-heroicons-circle-stack",
+        },
+        {
+            label: "Memory Info",
+            command: "systeminfo | findstr Memory",
+            icon: "i-heroicons-cpu-chip",
+        },
+        {
+            label: "Process List",
+            command: "tasklist",
+            icon: "i-heroicons-queue-list",
+        },
+        {
+            label: "Network Stats",
+            command: "netstat -an",
+            icon: "i-heroicons-arrows-right-left",
+        },
+        {
+            label: "Flush DNS",
+            command: "ipconfig /flushdns",
+            icon: "i-heroicons-bolt",
+        },
     ],
     Linux: [
         { label: "Current User", command: "whoami", icon: "i-heroicons-user" },
         { label: "Working Dir", command: "pwd", icon: "i-heroicons-folder" },
-        { label: "List Files", command: "ls -la", icon: "i-heroicons-document-text" },
-        { label: "System Info", command: "uname -a", icon: "i-heroicons-information-circle" },
-        { label: "IP Address", command: "ip addr", icon: "i-heroicons-globe-alt" },
-        { label: "Disk Usage", command: "df -h", icon: "i-heroicons-circle-stack" },
-        { label: "Memory Info", command: "free -h", icon: "i-heroicons-cpu-chip" },
-        { label: "Process List", command: "ps aux", icon: "i-heroicons-queue-list" },
-        { label: "Network Stats", command: "netstat -an", icon: "i-heroicons-arrows-right-left" },
+        {
+            label: "List Files",
+            command: "ls -la",
+            icon: "i-heroicons-document-text",
+        },
+        {
+            label: "System Info",
+            command: "uname -a",
+            icon: "i-heroicons-information-circle",
+        },
+        {
+            label: "IP Address",
+            command: "ip addr",
+            icon: "i-heroicons-globe-alt",
+        },
+        {
+            label: "Disk Usage",
+            command: "df -h",
+            icon: "i-heroicons-circle-stack",
+        },
+        {
+            label: "Memory Info",
+            command: "free -h",
+            icon: "i-heroicons-cpu-chip",
+        },
+        {
+            label: "Process List",
+            command: "ps aux",
+            icon: "i-heroicons-queue-list",
+        },
+        {
+            label: "Network Stats",
+            command: "netstat -an",
+            icon: "i-heroicons-arrows-right-left",
+        },
         { label: "Uptime", command: "uptime", icon: "i-heroicons-clock" },
     ],
 };
 
-const activeQuickCommands = computed(() => quickCommands[selectedOs.value] || []);
+const activeQuickCommands = computed(
+    () => quickCommands[selectedOs.value] || [],
+);
 
-const sidebarTabs: TabsItem[] = [
-    { label: "Quick", icon: "i-heroicons-bolt", slot: "quick" as const },
-    { label: "History", icon: "i-heroicons-clock", slot: "history" as const },
-    { label: "Logs", icon: "i-heroicons-list-bullet", slot: "logs" as const },
-];
+// Unused sidebar tabs - kept for reference
+// const sidebarTabs: TabsItem[] = [
+//     { label: "Quick", icon: "i-heroicons-bolt", slot: "quick" as const },
+//     { label: "History", icon: "i-heroicons-clock", slot: "history" as const },
+//     { label: "Logs", icon: "i-heroicons-list-bullet", slot: "logs" as const },
+// ];
 
 function sendCommand(cmd: string) {
     if (!ws.value || status.value !== "connected") return;
@@ -260,7 +352,9 @@ async function fetchDevice() {
 
 async function fetchLogs() {
     try {
-        logs.value = await $fetch<DeviceLog[]>(`/lynx/api/devices/${deviceId}/logs`);
+        logs.value = await $fetch<DeviceLog[]>(
+            `/lynx/api/devices/${deviceId}/logs`,
+        );
     } catch (err) {
         console.error("Failed to fetch logs:", err);
     }
@@ -268,15 +362,17 @@ async function fetchLogs() {
 
 async function fetchMetrics() {
     try {
-        const history = await $fetch<any[]>(`/lynx/api/devices/${deviceId}/metrics`);
+        const history = await $fetch<any[]>(
+            `/lynx/api/devices/${deviceId}/metrics`,
+        );
         // Map DB fields to chart interface
-        metricsHistory.value = history.map(h => ({
+        metricsHistory.value = history.map((h) => ({
             cpu: h.cpuUsage,
             ram: h.ramUsage,
             disk: h.diskUsage,
             netUp: h.networkUp,
             netDown: h.networkDown,
-            timestamp: new Date(h.timestamp).getTime()
+            timestamp: new Date(h.timestamp).getTime(),
         }));
     } catch (err) {
         console.error("Failed to fetch metrics:", err);
@@ -312,10 +408,16 @@ function openEditModal() {
 async function saveDevice() {
     if (!device.value) return;
     try {
-        const updated = await $fetch<Device>(`/lynx/api/devices/${device.value.id}`, {
-            method: "POST",
-            body: { name: editForm.name, group: editForm.group || undefined },
-        });
+        const updated = await $fetch<Device>(
+            `/lynx/api/devices/${device.value.id}`,
+            {
+                method: "POST",
+                body: {
+                    name: editForm.name,
+                    group: editForm.group || undefined,
+                },
+            },
+        );
         device.value = updated;
         editModalOpen.value = false;
     } catch (e) {
@@ -367,7 +469,8 @@ function initTerminal() {
                 if (cmd) {
                     if (commandHistory.value[0] !== cmd) {
                         commandHistory.value.unshift(cmd);
-                        if (commandHistory.value.length > 50) commandHistory.value.pop();
+                        if (commandHistory.value.length > 50)
+                            commandHistory.value.pop();
                     }
                 }
                 currentInputBuffer = "";
@@ -397,22 +500,22 @@ function initTerminal() {
     const resizeObserver = new ResizeObserver(() => {
         if (isResizing) return;
         if (resizeTimer) clearTimeout(resizeTimer);
-        
+
         resizeTimer = setTimeout(() => {
             if (!terminal.value || !fitAddon.value) return;
-            
+
             isResizing = true;
             try {
                 fitAddon.value.fit();
-                
+
                 const newCols = terminal.value.cols;
                 const newRows = terminal.value.rows;
-                
+
                 // Only send resize if dimensions actually changed
                 if (newCols !== lastCols || newRows !== lastRows) {
                     lastCols = newCols;
                     lastRows = newRows;
-                    
+
                     if (ws.value && status.value === "connected") {
                         ws.value.send(
                             JSON.stringify({
@@ -425,7 +528,9 @@ function initTerminal() {
                 }
             } finally {
                 // Release guard after a short delay to absorb any triggered resize events
-                setTimeout(() => { isResizing = false; }, 100);
+                setTimeout(() => {
+                    isResizing = false;
+                }, 100);
             }
         }, 300);
     });
@@ -494,7 +599,7 @@ function connect() {
                     ws.value?.send(
                         JSON.stringify({
                             type: "hello",
-                        })
+                        }),
                     );
                 }
             } else if (msg.type === "error") {
@@ -525,14 +630,17 @@ function connect() {
                     disk: msg.data.disk,
                     netUp: msg.data.netUp,
                     netDown: msg.data.netDown,
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
                 };
-                
+
                 // Keep last 200 points
                 metricsHistory.value.push(point);
                 if (metricsHistory.value.length > 200) {
                     metricsHistory.value.shift();
                 }
+            } else if (msg.type === "filesystem") {
+                // Forward to FileManager component
+                fileManagerRef.value?.handleFsMessage(msg);
             }
         } catch (e) {
             console.error(e);
@@ -644,43 +752,48 @@ onMounted(async () => {
 });
 
 const powerItems = [
-    [{
-        label: 'Restart',
-        icon: 'i-heroicons-arrow-path',
-        click: () => sendPowerCommand('restart')
-    }, {
-        label: 'Shutdown',
-        icon: 'i-heroicons-power',
-        click: () => sendPowerCommand('shutdown')
-    }]
-]
+    [
+        {
+            label: "Restart",
+            icon: "i-heroicons-arrow-path",
+            click: () => sendPowerCommand("restart"),
+        },
+        {
+            label: "Shutdown",
+            icon: "i-heroicons-power",
+            click: () => sendPowerCommand("shutdown"),
+        },
+    ],
+];
 
-function sendPowerCommand(action: 'restart' | 'shutdown') {
+function sendPowerCommand(action: "restart" | "shutdown") {
     if (!ws.value || !device.value) return;
 
-    let command = '';
-    const os = device.value.os || 'Windows'; // Default to Windows if unknown
+    let command = "";
+    const os = device.value.os || "Windows"; // Default to Windows if unknown
 
-    if (os.includes('Windows')) {
-        if (action === 'restart') command = 'shutdown /r /t 0';
-        if (action === 'shutdown') command = 'shutdown /s /t 0';
+    if (os.includes("Windows")) {
+        if (action === "restart") command = "shutdown /r /t 0";
+        if (action === "shutdown") command = "shutdown /s /t 0";
     } else {
         // Linux/Unix
-        if (action === 'restart') command = 'shutdown -r now';
-        if (action === 'shutdown') command = 'shutdown -h now';
+        if (action === "restart") command = "shutdown -r now";
+        if (action === "shutdown") command = "shutdown -h now";
     }
 
     if (command) {
-        ws.value.send(JSON.stringify({
-            type: 'command',
-            command: command
-        }));
-        
+        ws.value.send(
+            JSON.stringify({
+                type: "command",
+                command: command,
+            }),
+        );
+
         useToast().add({
             title: `Sending ${action} command`,
-            description: 'The device should respond shortly.',
-            icon: 'i-heroicons-paper-airplane',
-            color: 'primary'
+            description: "The device should respond shortly.",
+            icon: "i-heroicons-paper-airplane",
+            color: "primary",
         });
     }
 }
@@ -689,7 +802,9 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
 <template>
     <div class="min-h-[calc(100vh-100px)] flex flex-col gap-4 p-4 md:p-6">
         <!-- Header -->
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+        <div
+            class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3"
+        >
             <div class="flex items-center gap-3">
                 <UButton
                     icon="i-heroicons-arrow-left"
@@ -698,449 +813,756 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
                 />
                 <div>
                     <div class="flex items-center gap-2 flex-wrap">
-                         <h1 class="text-lg md:text-xl font-mono font-bold">
+                        <h1 class="text-lg md:text-xl font-mono font-bold">
                             {{ device?.name || "Device" }}
                         </h1>
-                        <UBadge v-if="device?.group" color="primary" variant="soft" size="xs">
+                        <UBadge
+                            v-if="device?.group"
+                            color="primary"
+                            variant="soft"
+                            size="xs"
+                        >
                             {{ device.group }}
                         </UBadge>
                         <UBadge
-                            :color="device?.status === 'online' ? 'success' : 'neutral'"
+                            :color="
+                                device?.status === 'online'
+                                    ? 'success'
+                                    : 'neutral'
+                            "
                             size="xs"
                         >
                             {{ device?.status || status }}
                         </UBadge>
                     </div>
-                   
+
                     <div class="flex items-center gap-2 flex-wrap">
-                        <code class="text-xs text-gray-500">{{ deviceId }}</code>
-                        <span v-if="device?.os" class="text-xs text-gray-500">• {{ device.os }} <span v-if="device.version">(v{{ device.version }})</span></span>
+                        <code class="text-xs text-gray-500">{{
+                            deviceId
+                        }}</code>
+                        <span v-if="device?.os" class="text-xs text-gray-500"
+                            >• {{ device.os }}
+                            <span v-if="device.version"
+                                >(v{{ device.version }})</span
+                            ></span
+                        >
                     </div>
                 </div>
             </div>
             <div class="flex items-center gap-2 flex-wrap">
-                 <UButton
+                <UButton
                     icon="i-heroicons-pencil-square"
                     variant="ghost"
                     color="neutral"
                     size="xs"
                     @click="openEditModal"
-                >Edit</UButton>
+                    >Edit</UButton
+                >
                 <UButton
                     icon="i-heroicons-trash"
                     variant="ghost"
                     color="error"
                     size="xs"
                     @click="deleteModalOpen = true"
-                >Delete</UButton>
-                <UDropdown :items="powerItems" :popper="{ placement: 'bottom-end' }">
+                    >Delete</UButton
+                >
+                <UDropdown
+                    :items="powerItems"
+                    :popper="{ placement: 'bottom-end' }"
+                >
                     <UButton
                         icon="i-heroicons-power"
                         color="warning"
                         variant="soft"
                         size="xs"
                         :disabled="device?.status !== 'online'"
-                    >Power</UButton>
+                        >Power</UButton
+                    >
                 </UDropdown>
             </div>
         </div>
 
-        <!-- Resource Monitoring Header -->
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-6 mb-2">
-            <div class="flex flex-col gap-1">
-                <h2 class="text-sm font-bold text-gray-500 uppercase tracking-[0.2em]">Resource Monitoring</h2>
-                <p class="text-xs text-gray-400">Real-time system performance and network activity</p>
-            </div>
-            <div class="flex items-center gap-4 flex-wrap">
-                <div class="flex items-center gap-2 bg-gray-800/50 px-3 py-1.5 rounded-lg border border-gray-800">
-                    <span class="text-xs text-gray-500 font-medium font-mono uppercase tracking-widest">Range</span>
-                    <USelectMenu
-                        v-model="selectedRange"
-                        :items="timeRanges"
-                        value-attribute="value"
-                        option-attribute="label"
-                        size="xs"
-                        variant="ghost"
-                        class="w-20 font-mono"
-                    />
-                </div>
-            </div>
-        </div>
-
-        <!-- Resource Monitoring Grid -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-6">
-             <!-- CPU Card -->
-             <UCard :ui="{ body: 'p-6' }" :class="{ 'ring-2 ring-red-500 bg-red-500/5': alertStates.cpu }" class="transition-all duration-300">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-2">
-                        <UIcon name="i-heroicons-cpu-chip" :class="['w-5 h-5', alertStates.cpu ? 'text-red-500 animate-pulse' : '']" />
-                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">CPU</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <UInputNumber v-if="enabledAlerts.cpu" v-model="thresholds.cpu" size="xs" class="w-32" :max="100"/>
-                        <USwitch v-model="enabledAlerts.cpu" size="sm" color="error" description="Enable Alert" />
-                    </div>
-                </div>
-                <div class="text-3xl font-bold font-mono mb-4" :class="{ 'text-red-500': alertStates.cpu }">
-                    {{ currentMetrics.cpu.toFixed(1) }}<span class="text-sm text-gray-500 ml-1">%</span>
-                </div>
-                <LineChart
-                    class="h-[100px]"
-                    :data="filteredMetrics"
-                    index="timestamp"
-                    :categories="['cpu']"
-                    :config="chartConfig"
-                    :options="commonChartOptions"
-                />
-             </UCard>
-
-             <!-- RAM Card -->
-             <UCard :ui="{ body: 'p-6' }" :class="{ 'ring-2 ring-red-500 bg-red-500/5': alertStates.ram }" class="transition-all duration-300">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-2">
-                        <UIcon name="i-heroicons-server" :class="['w-5 h-5', alertStates.ram ? 'text-red-500 animate-pulse' : '']" />
-                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">RAM</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <UInputNumber v-if="enabledAlerts.ram" v-model="thresholds.ram" size="xs" class="w-32" :max="100"/>
-                        <USwitch v-model="enabledAlerts.ram" size="sm" color="error" description="Enable Alert" />
-                    </div>
-                </div>
-                 <div class="text-3xl font-bold font-mono mb-4" :class="{ 'text-red-500': alertStates.ram }">
-                    {{ currentMetrics.ram.toFixed(1) }}<span class="text-sm text-gray-500 ml-1">%</span>
-                </div>
-                 <LineChart
-                    class="h-[100px]"
-                    :data="filteredMetrics"
-                    index="timestamp"
-                    :categories="['ram']"
-                    :config="chartConfig"
-                    :options="commonChartOptions"
-                />
-             </UCard>
-
-             <!-- Disk Card -->
-             <UCard :ui="{ body: 'p-6' }" class="transition-all duration-300">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-2">
-                        <UIcon name="i-heroicons-circle-stack" class="w-5 h-5" />
-                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">Disk</span>
-                    </div>
-                </div>
-                 <div class="text-3xl font-bold font-mono mb-4">
-                    {{ currentMetrics.disk.toFixed(1) }}<span class="text-sm text-gray-500 ml-1">%</span>
-                </div>
-                 <LineChart
-                    class="h-[100px]"
-                    :data="filteredMetrics"
-                    index="timestamp"
-                    :categories="['disk']"
-                    :config="chartConfig"
-                    :options="commonChartOptions"
-                />
-             </UCard>
-
-             <!-- Network Card -->
-               <UCard :ui="{ body: 'p-6' }" :class="{ 'ring-2 ring-red-500 bg-red-500/5': alertStates.net }" class="transition-all duration-300">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-2">
-                        <UIcon name="i-heroicons-globe-alt" :class="['w-5 h-5', alertStates.net ? 'text-red-500 animate-pulse' : '']" />
-                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">Network</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <UInputNumber v-if="enabledAlerts.net" v-model="thresholds.net" size="xs" class="w-32" />
-                        <span v-if="enabledAlerts.net" class="text-xs font-bold text-gray-400 uppercase tracking-widest">KB/s</span>
-                        <USwitch v-model="enabledAlerts.net" size="sm" color="error" description="Enable Alert" />
-                    </div>
-                </div>
-                 <div class="flex flex-col gap-1 mb-4">
-                    <div class="text-sm font-mono flex justify-between font-bold">
-                         <span :class="alertStates.net ? 'text-red-400' : 'text-blue-400'">↑ {{ currentMetrics.netUp.toFixed(1) }} <span class="text-[10px] opacity-70">KB/s</span></span>
-                    </div>
-                     <div class="text-sm font-mono flex justify-between font-bold">
-                         <span :class="alertStates.net ? 'text-red-400' : 'text-green-400'">↓ {{ currentMetrics.netDown.toFixed(1) }} <span class="text-[10px] opacity-70">KB/s</span></span>
-                    </div>
-                </div>
-                 <LineChart
-                    class="h-[80px]"
-                    :data="filteredMetrics"
-                    index="timestamp"
-                    :categories="['netUp', 'netDown']"
-                    :config="chartConfig"
-                    :options="{ 
-                        ...commonChartOptions, 
-                        scales: { 
-                            ...commonChartOptions.scales, 
-                            y: { 
-                                ...(commonChartOptions.scales?.y || {}), 
-                                max: undefined, 
-                                ticks: { stepSize: undefined } 
-                            } 
-                        } 
-                    }"
-                />
-             </UCard>
-        </div>
-
-        <!-- Bento Grid Layout -->
-        <div class="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-fr">
-            
-            <!-- Terminal Card - Large (spans 3 cols, 2 rows) -->
-            <UCard
-                class="md:col-span-2 lg:col-span-3 lg:row-span-2 flex flex-col min-h-[350px]"
-                :ui="{ body: 'flex-1 flex flex-col p-0 overflow-hidden' }"
-            >
-                <template #header>
-                    <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-2">
-                            <UIcon name="i-heroicons-command-line" class="text-primary-400" />
-                            <span class="text-sm font-semibold">Terminal</span>
-                        </div>
-                        <UButton
-                            icon="i-heroicons-trash"
-                            variant="ghost"
-                            color="neutral"
-                            size="xs"
-                            @click="clearTerminal"
-                        >Clear</UButton>
-                    </div>
-                </template>
+        <!-- Page Tabs -->
+        <UTabs
+            :items="pageTabs"
+            class="flex-1 flex flex-col"
+        >
+            <template #overview>
+                <!-- Resource Monitoring Header -->
                 <div
-                    ref="terminalRef"
-                    class="flex-1 bg-[#0a0a0a] p-2 overflow-hidden"
-                />
-            </UCard>
-
-            <!-- Quick Commands Card (spans 1 col, 1 row) -->
-            <UCard class="flex flex-col min-h-[200px]" :ui="{ body: 'flex-1 flex flex-col p-0 overflow-hidden' }">
-                <template #header>
-                    <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-2">
-                            <UIcon name="i-heroicons-bolt" class="text-yellow-400" />
-                            <span class="text-sm font-semibold">Quick Commands</span>
-                        </div>
-                        <USelectMenu v-model="selectedOs" :items="osOptions" size="xs" class="w-20" />
-                    </div>
-                </template>
-                <div class="flex-1 p-3 overflow-y-auto">
-                    <div class="grid grid-cols-1 gap-1.5">
-                        <UButton
-                            v-for="cmd in activeQuickCommands"
-                            :key="cmd.command"
-                            :icon="cmd.icon"
-                            variant="ghost"
-                            color="neutral"
-                            size="xs"
-                            block
-                            class="justify-start font-mono text-[10px]"
-                            @click="sendCommand(cmd.command)"
+                    class="flex flex-col sm:flex-row sm:items-center justify-between gap-6 mb-2"
+                >
+                    <div class="flex flex-col gap-1">
+                        <h2
+                            class="text-sm font-bold text-gray-500 uppercase tracking-[0.2em]"
                         >
-                            {{ cmd.label }}
-                        </UButton>
+                            Resource Monitoring
+                        </h2>
+                        <p class="text-xs text-gray-400">
+                            Real-time system performance and network activity
+                        </p>
                     </div>
-                </div>
-            </UCard>
-
-            <!-- History Card (spans 1 col, 1 row) -->
-            <UCard class="flex flex-col min-h-[200px]" :ui="{ body: 'flex-1 flex flex-col p-0 overflow-hidden' }">
-                <template #header>
-                    <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-2">
-                            <UIcon name="i-heroicons-clock" class="text-blue-400" />
-                            <span class="text-sm font-semibold">History</span>
-                            <UBadge v-if="commandHistory.length > 0" color="neutral" variant="subtle" size="xs">
-                                {{ commandHistory.length }}
-                            </UBadge>
-                        </div>
-                        <UButton
-                            v-if="commandHistory.length > 0"
-                            icon="i-heroicons-trash"
-                            variant="ghost"
-                            color="error"
-                            size="xs"
-                            @click="commandHistory = []"
-                        />
-                    </div>
-                </template>
-                <div class="flex-1 overflow-y-auto">
-                    <div v-if="commandHistory.length === 0" class="flex-1 flex flex-col items-center justify-center text-gray-500 text-xs p-4 text-center h-full">
-                        <UIcon name="i-heroicons-clock" class="w-8 h-8 mb-2 opacity-20" />
-                        No history yet
-                    </div>
-                    <div v-else class="p-2 flex flex-col gap-1">
+                    <div class="flex items-center gap-4 flex-wrap">
                         <div
-                            v-for="(cmd, i) in commandHistory.slice(0, 10)"
-                            :key="i"
-                            class="group flex items-center gap-2 p-2 rounded hover:bg-white/5 cursor-pointer text-xs"
-                            @click="sendCommand(cmd)"
+                            class="flex items-center gap-2 bg-gray-800/50 px-3 py-1.5 rounded-lg border border-gray-800"
                         >
-                            <UIcon name="i-heroicons-chevron-right" class="text-gray-600 w-3 h-3 shrink-0" />
-                            <code class="text-gray-300 truncate flex-1">{{ cmd }}</code>
-                        </div>
-                    </div>
-                </div>
-            </UCard>
-
-            <!-- Screenshots Card (spans 2 cols on lg) -->
-            <UCard class="md:col-span-2 lg:col-span-2 flex flex-col min-h-[200px]" :ui="{ body: 'flex-1 p-0 overflow-hidden' }">
-                <template #header>
-                    <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-2">
-                            <UIcon name="i-heroicons-photo" class="text-purple-400" />
-                            <span class="text-sm font-semibold">Screenshots</span>
-                            <UBadge v-if="screenshots.length > 0" color="neutral" variant="subtle" size="xs">
-                                {{ screenshots.length }}
-                            </UBadge>
-                        </div>
-                        <UButton
-                            icon="i-heroicons-camera"
-                            color="primary"
-                            variant="soft"
-                            size="xs"
-                            :loading="isTakingScreenshot"
-                            :disabled="device?.status !== 'online'"
-                            @click="takeScreenshot"
-                        >
-                            Capture
-                        </UButton>
-                    </div>
-                </template>
-                <div class="p-3 h-full">
-                    <div
-                        v-if="screenshots.length === 0"
-                        class="flex flex-col items-center justify-center text-gray-500 h-full"
-                    >
-                        <UIcon name="i-heroicons-photo" class="w-8 h-8 mb-2 opacity-20" />
-                        <span class="text-xs">No screenshots yet</span>
-                    </div>
-                    <div
-                        v-else
-                        class="grid grid-cols-3 sm:grid-cols-4 gap-2"
-                    >
-                        <div
-                            v-for="shot in screenshots.slice(0, 8)"
-                            :key="shot"
-                            class="group relative aspect-video bg-gray-900 rounded overflow-hidden cursor-pointer border border-gray-800 hover:border-primary-500 transition-all"
-                            @click="activeScreenshot = shot"
-                        >
-                            <img
-                                :src="`/lynx/images/${deviceId}/${shot}`"
-                                class="w-full h-full object-cover"
-                                loading="lazy"
-                            />
-                            <div
-                                class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                            <span
+                                class="text-xs text-gray-500 font-medium font-mono uppercase tracking-widest"
+                                >Range</span
                             >
-                                <UIcon name="i-heroicons-magnifying-glass-plus" class="text-white w-4 h-4" />
+                            <USelectMenu
+                                v-model="selectedRange"
+                                :items="timeRanges"
+                                value-attribute="value"
+                                option-attribute="label"
+                                size="xs"
+                                variant="ghost"
+                                class="w-20 font-mono"
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Resource Monitoring Grid -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-6">
+                    <!-- CPU Card -->
+                    <UCard
+                        :ui="{ body: 'p-6' }"
+                        :class="{
+                            'ring-2 ring-red-500 bg-red-500/5': alertStates.cpu,
+                        }"
+                        class="transition-all duration-300"
+                    >
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="flex items-center gap-2">
+                                <UIcon
+                                    name="i-heroicons-cpu-chip"
+                                    :class="[
+                                        'w-5 h-5',
+                                        alertStates.cpu
+                                            ? 'text-red-500 animate-pulse'
+                                            : '',
+                                    ]"
+                                />
+                                <span
+                                    class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+                                    >CPU</span
+                                >
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <UInputNumber
+                                    v-if="enabledAlerts.cpu"
+                                    v-model="thresholds.cpu"
+                                    size="xs"
+                                    class="w-32"
+                                    :max="100"
+                                />
+                                <USwitch
+                                    v-model="enabledAlerts.cpu"
+                                    size="sm"
+                                    color="error"
+                                    description="Enable Alert"
+                                />
                             </div>
                         </div>
                         <div
-                            v-if="screenshots.length > 8"
-                            class="aspect-video bg-gray-800/50 rounded flex items-center justify-center text-gray-400 text-xs font-medium cursor-pointer hover:bg-gray-800 transition-colors"
+                            class="text-3xl font-bold font-mono mb-4"
+                            :class="{ 'text-red-500': alertStates.cpu }"
                         >
-                            +{{ screenshots.length - 8 }}
+                            {{ currentMetrics.cpu.toFixed(1)
+                            }}<span class="text-sm text-gray-500 ml-1">%</span>
                         </div>
-                    </div>
-                </div>
-            </UCard>
+                        <LineChart
+                            class="h-[100px]"
+                            :data="filteredMetrics"
+                            index="timestamp"
+                            :categories="['cpu']"
+                            :config="chartConfig"
+                            :options="commonChartOptions"
+                        />
+                    </UCard>
 
-            <!-- Connection Logs Card (spans 2 cols on lg) -->
-            <UCard class="md:col-span-2 lg:col-span-2 flex flex-col min-h-[250px]" :ui="{ body: 'p-0 flex-1 overflow-hidden' }">
-                <template #header>
-                    <div class="flex items-center gap-2">
-                        <UIcon name="i-heroicons-list-bullet" class="text-green-400" />
-                        <span class="text-sm font-bold uppercase tracking-widest text-gray-400">Connection Logs</span>
-                    </div>
-                </template>
-                <div class="flex-1 overflow-y-auto">
-                    <UTable :rows="logs" :columns="logColumns" :ui="{ td: 'px-6 py-3', th: 'px-6 py-3' }">
-                        <template #type-data="{ row }">
-                            <UBadge 
-                                :color="row.original.type === 'connect' ? 'success' : row.original.type === 'reconnect' ? 'warning' : 'error'"
-                                variant="subtle"
-                                size="sm"
-                                class="font-bold tracking-widest px-2"
+                    <!-- RAM Card -->
+                    <UCard
+                        :ui="{ body: 'p-6' }"
+                        :class="{
+                            'ring-2 ring-red-500 bg-red-500/5': alertStates.ram,
+                        }"
+                        class="transition-all duration-300"
+                    >
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="flex items-center gap-2">
+                                <UIcon
+                                    name="i-heroicons-server"
+                                    :class="[
+                                        'w-5 h-5',
+                                        alertStates.ram
+                                            ? 'text-red-500 animate-pulse'
+                                            : '',
+                                    ]"
+                                />
+                                <span
+                                    class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+                                    >RAM</span
+                                >
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <UInputNumber
+                                    v-if="enabledAlerts.ram"
+                                    v-model="thresholds.ram"
+                                    size="xs"
+                                    class="w-32"
+                                    :max="100"
+                                />
+                                <USwitch
+                                    v-model="enabledAlerts.ram"
+                                    size="sm"
+                                    color="error"
+                                    description="Enable Alert"
+                                />
+                            </div>
+                        </div>
+                        <div
+                            class="text-3xl font-bold font-mono mb-4"
+                            :class="{ 'text-red-500': alertStates.ram }"
+                        >
+                            {{ currentMetrics.ram.toFixed(1)
+                            }}<span class="text-sm text-gray-500 ml-1">%</span>
+                        </div>
+                        <LineChart
+                            class="h-[100px]"
+                            :data="filteredMetrics"
+                            index="timestamp"
+                            :categories="['ram']"
+                            :config="chartConfig"
+                            :options="commonChartOptions"
+                        />
+                    </UCard>
+
+                    <!-- Disk Card -->
+                    <UCard
+                        :ui="{ body: 'p-6' }"
+                        class="transition-all duration-300"
+                    >
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="flex items-center gap-2">
+                                <UIcon
+                                    name="i-heroicons-circle-stack"
+                                    class="w-5 h-5"
+                                />
+                                <span
+                                    class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+                                    >Disk</span
+                                >
+                            </div>
+                        </div>
+                        <div class="text-3xl font-bold font-mono mb-4">
+                            {{ currentMetrics.disk.toFixed(1)
+                            }}<span class="text-sm text-gray-500 ml-1">%</span>
+                        </div>
+                        <LineChart
+                            class="h-[100px]"
+                            :data="filteredMetrics"
+                            index="timestamp"
+                            :categories="['disk']"
+                            :config="chartConfig"
+                            :options="commonChartOptions"
+                        />
+                    </UCard>
+
+                    <!-- Network Card -->
+                    <UCard
+                        :ui="{ body: 'p-6' }"
+                        :class="{
+                            'ring-2 ring-red-500 bg-red-500/5': alertStates.net,
+                        }"
+                        class="transition-all duration-300"
+                    >
+                        <div class="flex items-center justify-between mb-4">
+                            <div class="flex items-center gap-2">
+                                <UIcon
+                                    name="i-heroicons-globe-alt"
+                                    :class="[
+                                        'w-5 h-5',
+                                        alertStates.net
+                                            ? 'text-red-500 animate-pulse'
+                                            : '',
+                                    ]"
+                                />
+                                <span
+                                    class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+                                    >Network</span
+                                >
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <UInputNumber
+                                    v-if="enabledAlerts.net"
+                                    v-model="thresholds.net"
+                                    size="xs"
+                                    class="w-32"
+                                />
+                                <span
+                                    v-if="enabledAlerts.net"
+                                    class="text-xs font-bold text-gray-400 uppercase tracking-widest"
+                                    >KB/s</span
+                                >
+                                <USwitch
+                                    v-model="enabledAlerts.net"
+                                    size="sm"
+                                    color="error"
+                                    description="Enable Alert"
+                                />
+                            </div>
+                        </div>
+                        <div class="flex flex-col gap-1 mb-4">
+                            <div
+                                class="text-sm font-mono flex justify-between font-bold"
                             >
-                                {{ row.original.type.toUpperCase() }}
-                            </UBadge>
-                        </template>
-                        <template #timestamp-data="{ row }">
-                            <span class="text-xs text-gray-400 font-mono">{{ formatRelativeTime(row.original.timestamp) }}</span>
-                        </template>
-                    </UTable>
+                                <span
+                                    :class="
+                                        alertStates.net
+                                            ? 'text-red-400'
+                                            : 'text-blue-400'
+                                    "
+                                    >↑ {{ currentMetrics.netUp.toFixed(1) }}
+                                    <span class="text-[10px] opacity-70"
+                                        >KB/s</span
+                                    ></span
+                                >
+                            </div>
+                            <div
+                                class="text-sm font-mono flex justify-between font-bold"
+                            >
+                                <span
+                                    :class="
+                                        alertStates.net
+                                            ? 'text-red-400'
+                                            : 'text-green-400'
+                                    "
+                                    >↓ {{ currentMetrics.netDown.toFixed(1) }}
+                                    <span class="text-[10px] opacity-70"
+                                        >KB/s</span
+                                    ></span
+                                >
+                            </div>
+                        </div>
+                        <LineChart
+                            class="h-[80px]"
+                            :data="filteredMetrics"
+                            index="timestamp"
+                            :categories="['netUp', 'netDown']"
+                            :config="chartConfig"
+                            :options="{
+                                ...commonChartOptions,
+                                scales: {
+                                    ...commonChartOptions.scales,
+                                    y: {
+                                        ...(commonChartOptions.scales?.y || {}),
+                                        max: undefined,
+                                        ticks: { stepSize: undefined },
+                                    },
+                                },
+                            }"
+                        />
+                    </UCard>
                 </div>
-            </UCard>
-        </div>
+
+                <!-- Bento Grid Layout -->
+                <div
+                    class="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-fr"
+                >
+                    <!-- Terminal Card - Large (spans 3 cols, 2 rows) -->
+                    <UCard
+                        class="md:col-span-2 lg:col-span-3 lg:row-span-2 flex flex-col min-h-[350px]"
+                        :ui="{
+                            body: 'flex-1 flex flex-col p-0 overflow-hidden',
+                        }"
+                    >
+                        <template #header>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <UIcon
+                                        name="i-heroicons-command-line"
+                                        class="text-primary-400"
+                                    />
+                                    <span class="text-sm font-semibold"
+                                        >Terminal</span
+                                    >
+                                </div>
+                                <UButton
+                                    icon="i-heroicons-trash"
+                                    variant="ghost"
+                                    color="neutral"
+                                    size="xs"
+                                    @click="clearTerminal"
+                                    >Clear</UButton
+                                >
+                            </div>
+                        </template>
+                        <div
+                            ref="terminalRef"
+                            class="flex-1 bg-[#0a0a0a] p-2 overflow-hidden"
+                        />
+                    </UCard>
+
+                    <!-- Quick Commands Card (spans 1 col, 1 row) -->
+                    <UCard
+                        class="flex flex-col min-h-[200px]"
+                        :ui="{
+                            body: 'flex-1 flex flex-col p-0 overflow-hidden',
+                        }"
+                    >
+                        <template #header>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <UIcon
+                                        name="i-heroicons-bolt"
+                                        class="text-yellow-400"
+                                    />
+                                    <span class="text-sm font-semibold"
+                                        >Quick Commands</span
+                                    >
+                                </div>
+                                <USelectMenu
+                                    v-model="selectedOs"
+                                    :items="osOptions"
+                                    size="xs"
+                                    class="w-20"
+                                />
+                            </div>
+                        </template>
+                        <div class="flex-1 p-3 overflow-y-auto">
+                            <div class="grid grid-cols-1 gap-1.5">
+                                <UButton
+                                    v-for="cmd in activeQuickCommands"
+                                    :key="cmd.command"
+                                    :icon="cmd.icon"
+                                    variant="ghost"
+                                    color="neutral"
+                                    size="xs"
+                                    block
+                                    class="justify-start font-mono text-[10px]"
+                                    @click="sendCommand(cmd.command)"
+                                >
+                                    {{ cmd.label }}
+                                </UButton>
+                            </div>
+                        </div>
+                    </UCard>
+
+                    <!-- History Card (spans 1 col, 1 row) -->
+                    <UCard
+                        class="flex flex-col min-h-[200px]"
+                        :ui="{
+                            body: 'flex-1 flex flex-col p-0 overflow-hidden',
+                        }"
+                    >
+                        <template #header>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <UIcon
+                                        name="i-heroicons-clock"
+                                        class="text-blue-400"
+                                    />
+                                    <span class="text-sm font-semibold"
+                                        >History</span
+                                    >
+                                    <UBadge
+                                        v-if="commandHistory.length > 0"
+                                        color="neutral"
+                                        variant="subtle"
+                                        size="xs"
+                                    >
+                                        {{ commandHistory.length }}
+                                    </UBadge>
+                                </div>
+                                <UButton
+                                    v-if="commandHistory.length > 0"
+                                    icon="i-heroicons-trash"
+                                    variant="ghost"
+                                    color="error"
+                                    size="xs"
+                                    @click="commandHistory = []"
+                                />
+                            </div>
+                        </template>
+                        <div class="flex-1 overflow-y-auto">
+                            <div
+                                v-if="commandHistory.length === 0"
+                                class="flex-1 flex flex-col items-center justify-center text-gray-500 text-xs p-4 text-center h-full"
+                            >
+                                <UIcon
+                                    name="i-heroicons-clock"
+                                    class="w-8 h-8 mb-2 opacity-20"
+                                />
+                                No history yet
+                            </div>
+                            <div v-else class="p-2 flex flex-col gap-1">
+                                <div
+                                    v-for="(cmd, i) in commandHistory.slice(
+                                        0,
+                                        10,
+                                    )"
+                                    :key="i"
+                                    class="group flex items-center gap-2 p-2 rounded hover:bg-white/5 cursor-pointer text-xs"
+                                    @click="sendCommand(cmd)"
+                                >
+                                    <UIcon
+                                        name="i-heroicons-chevron-right"
+                                        class="text-gray-600 w-3 h-3 shrink-0"
+                                    />
+                                    <code
+                                        class="text-gray-300 truncate flex-1"
+                                        >{{ cmd }}</code
+                                    >
+                                </div>
+                            </div>
+                        </div>
+                    </UCard>
+
+                    <!-- Screenshots Card (spans 2 cols on lg) -->
+                    <UCard
+                        class="md:col-span-2 lg:col-span-2 flex flex-col min-h-[200px]"
+                        :ui="{ body: 'flex-1 p-0 overflow-hidden' }"
+                    >
+                        <template #header>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <UIcon
+                                        name="i-heroicons-photo"
+                                        class="text-purple-400"
+                                    />
+                                    <span class="text-sm font-semibold"
+                                        >Screenshots</span
+                                    >
+                                    <UBadge
+                                        v-if="screenshots.length > 0"
+                                        color="neutral"
+                                        variant="subtle"
+                                        size="xs"
+                                    >
+                                        {{ screenshots.length }}
+                                    </UBadge>
+                                </div>
+                                <UButton
+                                    icon="i-heroicons-camera"
+                                    color="primary"
+                                    variant="soft"
+                                    size="xs"
+                                    :loading="isTakingScreenshot"
+                                    :disabled="device?.status !== 'online'"
+                                    @click="takeScreenshot"
+                                >
+                                    Capture
+                                </UButton>
+                            </div>
+                        </template>
+                        <div class="p-3 h-full">
+                            <div
+                                v-if="screenshots.length === 0"
+                                class="flex flex-col items-center justify-center text-gray-500 h-full"
+                            >
+                                <UIcon
+                                    name="i-heroicons-photo"
+                                    class="w-8 h-8 mb-2 opacity-20"
+                                />
+                                <span class="text-xs">No screenshots yet</span>
+                            </div>
+                            <div
+                                v-else
+                                class="grid grid-cols-3 sm:grid-cols-4 gap-2"
+                            >
+                                <div
+                                    v-for="shot in screenshots.slice(0, 8)"
+                                    :key="shot"
+                                    class="group relative aspect-video bg-gray-900 rounded overflow-hidden cursor-pointer border border-gray-800 hover:border-primary-500 transition-all"
+                                    @click="activeScreenshot = shot"
+                                >
+                                    <img
+                                        :src="`/lynx/images/${deviceId}/${shot}`"
+                                        class="w-full h-full object-cover"
+                                        loading="lazy"
+                                    />
+                                    <div
+                                        class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                                    >
+                                        <UIcon
+                                            name="i-heroicons-magnifying-glass-plus"
+                                            class="text-white w-4 h-4"
+                                        />
+                                    </div>
+                                </div>
+                                <div
+                                    v-if="screenshots.length > 8"
+                                    class="aspect-video bg-gray-800/50 rounded flex items-center justify-center text-gray-400 text-xs font-medium cursor-pointer hover:bg-gray-800 transition-colors"
+                                >
+                                    +{{ screenshots.length - 8 }}
+                                </div>
+                            </div>
+                        </div>
+                    </UCard>
+
+                    <!-- Connection Logs Card (spans 2 cols on lg) -->
+                    <UCard
+                        class="md:col-span-2 lg:col-span-2 flex flex-col min-h-[250px]"
+                        :ui="{ body: 'p-0 flex-1 overflow-hidden' }"
+                    >
+                        <template #header>
+                            <div class="flex items-center gap-2">
+                                <UIcon
+                                    name="i-heroicons-list-bullet"
+                                    class="text-green-400"
+                                />
+                                <span
+                                    class="text-sm font-bold uppercase tracking-widest text-gray-400"
+                                    >Connection Logs</span
+                                >
+                            </div>
+                        </template>
+                        <div class="flex-1 overflow-y-auto">
+                            <UTable
+                                :rows="logs"
+                                :columns="logColumns"
+                                :ui="{ td: 'px-6 py-3', th: 'px-6 py-3' }"
+                            >
+                                <template #type-data="{ row }">
+                                    <UBadge
+                                        :color="
+                                            row.original.type === 'connect'
+                                                ? 'success'
+                                                : row.original.type ===
+                                                    'reconnect'
+                                                  ? 'warning'
+                                                  : 'error'
+                                        "
+                                        variant="subtle"
+                                        size="sm"
+                                        class="font-bold tracking-widest px-2"
+                                    >
+                                        {{ row.original.type.toUpperCase() }}
+                                    </UBadge>
+                                </template>
+                                <template #timestamp-data="{ row }">
+                                    <span
+                                        class="text-xs text-gray-400 font-mono"
+                                        >{{
+                                            formatRelativeTime(
+                                                row.original.timestamp,
+                                            )
+                                        }}</span
+                                    >
+                                </template>
+                            </UTable>
+                        </div>
+                    </UCard>
+                </div>
+            </template>
+
+            <template #files>
+                <UCard
+                    class="flex-1"
+                    :ui="{ body: 'p-0 h-[calc(100vh-300px)]' }"
+                >
+                    <template #header>
+                        <div class="flex items-center gap-2">
+                            <UIcon
+                                name="i-heroicons-folder"
+                                class="text-yellow-400"
+                            />
+                            <span class="text-sm font-semibold"
+                                >File Manager</span
+                            >
+                        </div>
+                    </template>
+                    <FileManager
+                        ref="fileManagerRef"
+                        :ws="ws"
+                        :status="status"
+                        :device-id="deviceId"
+                    />
+                </UCard>
+            </template>
+        </UTabs>
 
         <UModal
             v-model:open="isScreenshotModalOpen"
-            :ui="{ 
+            :ui="{
                 body: 'relative text-left rtl:text-right overflow-hidden w-full h-full flex flex-col bg-gray-900 w-full max-w-[95vw] h-[90vh] p-0 rounded-xl',
             }"
             fullscreen
         >
-          <template #body>
-            <div class="relative w-full h-full flex flex-col bg-black/90">
-                <!-- Toolbar -->
-                <div class="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-gray-800/80 backdrop-blur rounded-full px-4 py-2 border border-white/10 shadow-xl">
-                    <UButton
-                        icon="i-heroicons-minus"
-                        variant="ghost"
-                        color="neutral"
-                        size="sm"
-                        @click="zoomLevel = Math.max(0.5, zoomLevel - 0.25)"
-                    />
-                    <span class="text-white font-mono text-sm min-w-[3ch] text-center">{{ Math.round(zoomLevel * 100) }}%</span>
-                     <UButton
-                        icon="i-heroicons-plus"
-                        variant="ghost"
-                        color="neutral"
-                        size="sm"
-                        @click="zoomLevel = Math.min(5, zoomLevel + 0.25)"
-                    />
-                     <div class="w-px h-4 bg-white/20 mx-1"></div>
-                    <UButton
-                        icon="i-heroicons-arrows-pointing-out"
-                        variant="ghost"
-                        color="neutral"
-                        size="sm"
-                        @click="resetZoom"
-                    />
-                     <div class="w-px h-4 bg-white/20 mx-1"></div>
-                     <UButton
-                        icon="i-heroicons-x-mark"
-                        variant="ghost"
-                        color="neutral"
-                        size="sm"
-                        @click="activeScreenshot = null"
-                    />
-                </div>
+            <template #body>
+                <div class="relative w-full h-full flex flex-col bg-black/90">
+                    <!-- Toolbar -->
+                    <div
+                        class="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-gray-800/80 backdrop-blur rounded-full px-4 py-2 border border-white/10 shadow-xl"
+                    >
+                        <UButton
+                            icon="i-heroicons-minus"
+                            variant="ghost"
+                            color="neutral"
+                            size="sm"
+                            @click="zoomLevel = Math.max(0.5, zoomLevel - 0.25)"
+                        />
+                        <span
+                            class="text-white font-mono text-sm min-w-[3ch] text-center"
+                            >{{ Math.round(zoomLevel * 100) }}%</span
+                        >
+                        <UButton
+                            icon="i-heroicons-plus"
+                            variant="ghost"
+                            color="neutral"
+                            size="sm"
+                            @click="zoomLevel = Math.min(5, zoomLevel + 0.25)"
+                        />
+                        <div class="w-px h-4 bg-white/20 mx-1"></div>
+                        <UButton
+                            icon="i-heroicons-arrows-pointing-out"
+                            variant="ghost"
+                            color="neutral"
+                            size="sm"
+                            @click="resetZoom"
+                        />
+                        <div class="w-px h-4 bg-white/20 mx-1"></div>
+                        <UButton
+                            icon="i-heroicons-x-mark"
+                            variant="ghost"
+                            color="neutral"
+                            size="sm"
+                            @click="activeScreenshot = null"
+                        />
+                    </div>
 
-                <!-- Image Container -->
-                <div 
-                    class="flex-1 overflow-hidden relative cursor-grab active:cursor-grabbing flex items-center justify-center"
-                    @wheel="handleWheel"
-                    @mousedown="startDrag"
-                    @mousemove="onDrag"
-                    @mouseup="stopDrag"
-                    @mouseleave="stopDrag"
-                >
-                    <img
-                        v-if="activeScreenshot"
-                        ref="imageRef"
-                        :src="`/lynx/images/${deviceId}/${activeScreenshot}`"
-                        :class="['max-w-full max-h-full object-contain select-none', { 'transition-transform duration-200 ease-out': !isDragging }]"
-                        :style="{
-                            transform: `translate(${panX}px, ${panY}px) scale(${zoomLevel})`,
-                            cursor: isDragging ? 'grabbing' : 'grab'
-                        }"
-                        draggable="false"
-                    />
+                    <!-- Image Container -->
+                    <div
+                        class="flex-1 overflow-hidden relative cursor-grab active:cursor-grabbing flex items-center justify-center"
+                        @wheel="handleWheel"
+                        @mousedown="startDrag"
+                        @mousemove="onDrag"
+                        @mouseup="stopDrag"
+                        @mouseleave="stopDrag"
+                    >
+                        <img
+                            v-if="activeScreenshot"
+                            ref="imageRef"
+                            :src="`/lynx/images/${deviceId}/${activeScreenshot}`"
+                            :class="[
+                                'max-w-full max-h-full object-contain select-none',
+                                {
+                                    'transition-transform duration-200 ease-out':
+                                        !isDragging,
+                                },
+                            ]"
+                            :style="{
+                                transform: `translate(${panX}px, ${panY}px) scale(${zoomLevel})`,
+                                cursor: isDragging ? 'grabbing' : 'grab',
+                            }"
+                            draggable="false"
+                        />
+                    </div>
                 </div>
-            </div>
-          </template>
+            </template>
         </UModal>
-
 
         <!-- Edit Modal -->
         <UModal v-model:open="editModalOpen">
@@ -1151,29 +1573,50 @@ function sendPowerCommand(action: 'restart' | 'shutdown') {
                         <UInput v-model="editForm.name" />
                     </UFormField>
                     <UFormField label="Group (e.g. Office, Lab)">
-                        <UInput v-model="editForm.group" placeholder="Enter group name" />
+                        <UInput
+                            v-model="editForm.group"
+                            placeholder="Enter group name"
+                        />
                     </UFormField>
                 </div>
             </template>
             <template #footer>
                 <div class="flex justify-end gap-2">
-                     <UButton color="neutral" variant="ghost" @click="editModalOpen = false">Cancel</UButton>
-                     <UButton color="primary" @click="saveDevice">Save</UButton>
+                    <UButton
+                        color="neutral"
+                        variant="ghost"
+                        @click="editModalOpen = false"
+                        >Cancel</UButton
+                    >
+                    <UButton color="primary" @click="saveDevice">Save</UButton>
                 </div>
             </template>
         </UModal>
 
         <!-- Delete Modal -->
-         <UModal v-model:open="deleteModalOpen">
+        <UModal v-model:open="deleteModalOpen">
             <template #title>Delete Device</template>
-             <template #body>
-                <p>Are you sure you want to delete <span class="font-bold text-white">{{ device?.name }}</span>?</p>
-                <p class="text-sm text-gray-400 mt-2">This action cannot be undone.</p>
+            <template #body>
+                <p>
+                    Are you sure you want to delete
+                    <span class="font-bold text-white">{{ device?.name }}</span
+                    >?
+                </p>
+                <p class="text-sm text-gray-400 mt-2">
+                    This action cannot be undone.
+                </p>
             </template>
             <template #footer>
                 <div class="flex justify-end gap-2">
-                     <UButton color="neutral" variant="ghost" @click="deleteModalOpen = false">Cancel</UButton>
-                     <UButton color="error" @click="deleteDevice">Delete</UButton>
+                    <UButton
+                        color="neutral"
+                        variant="ghost"
+                        @click="deleteModalOpen = false"
+                        >Cancel</UButton
+                    >
+                    <UButton color="error" @click="deleteDevice"
+                        >Delete</UButton
+                    >
                 </div>
             </template>
         </UModal>
