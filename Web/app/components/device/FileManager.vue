@@ -26,11 +26,24 @@ const isUploading = ref(false);
 const uploadProgress = ref(0);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
+// Download state
+interface DownloadTask {
+    id: string;
+    name: string;
+    progress: number;
+    status: 'downloading' | 'completed' | 'error';
+    error?: string;
+}
+
+const activeDownloads = ref<DownloadTask[]>([]);
+const CHUNK_SIZE = 1024 * 1024; // 1MB
+
 // Modals
 const deleteModalOpen = ref(false);
 const renameModalOpen = ref(false);
 const selectedFile = ref<FileItem | null>(null);
 const newName = ref("");
+const selected = ref<FileItem[]>([]);
 
 const toast = useToast();
 
@@ -48,10 +61,11 @@ const pathSegments = computed(() => {
 
 // Table columns
 const columns: TableColumn<FileItem>[] = [
+    { id: "select" },
     { accessorKey: "name", header: "Name" },
     { accessorKey: "size", header: "Size" },
     { accessorKey: "modifiedAt", header: "Modified" },
-    { accessorKey: "actions", header: "" },
+    { id: "actions" },
 ];
 
 function generateRequestId() {
@@ -119,6 +133,7 @@ async function fetchDrives() {
 async function fetchDirectory(path: string) {
     isLoading.value = true;
     error.value = null;
+    selected.value = []; // Reset selection on navigation
     try {
         const result = await sendFsCommand("ls", { path });
         files.value = result.data || [];
@@ -162,21 +177,59 @@ function goUp() {
 async function downloadFile(item: FileItem) {
     if (item.isDir) return;
     
+    const downloadId = generateRequestId();
+    const task: DownloadTask = reactive({
+        id: downloadId,
+        name: item.name,
+        progress: 0,
+        status: 'downloading'
+    });
+    activeDownloads.value.push(task);
+    
+    const chunks: Uint8Array[] = [];
+    
     try {
-        isLoading.value = true;
         const filePath = currentPath.value.endsWith("\\")
             ? currentPath.value + item.name
             : currentPath.value + "\\" + item.name;
         
-        const result = await sendFsCommand("read", { path: filePath });
+        let offset = 0;
+        let totalSize = item.size;
         
-        // Decode base64 and trigger download
-        const binaryString = atob(result.data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
+        while (offset < totalSize) {
+            let retryCount = 0;
+            let success = false;
+            let result: any = null;
+
+            while (retryCount < 3 && !success) {
+                try {
+                    result = await sendFsCommand("read", { 
+                        path: filePath, 
+                        offset, 
+                        length: CHUNK_SIZE 
+                    });
+                    success = true;
+                } catch (e) {
+                    retryCount++;
+                    if (retryCount >= 3) throw e;
+                    await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
+                }
+            }
+
+            // Decode base64 chunk
+            const binaryString = atob(result.data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            chunks.push(bytes);
+            
+            offset += result.size;
+            totalSize = result.totalSize; // Update from server response
+            task.progress = Math.round((offset / totalSize) * 100);
         }
-        const blob = new Blob([bytes]);
+        
+        const blob = new Blob(chunks as any);
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -186,21 +239,64 @@ async function downloadFile(item: FileItem) {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
         
+        task.status = 'completed';
         toast.add({
             title: "Downloaded",
             description: item.name,
             color: "success",
             icon: "i-heroicons-arrow-down-tray",
         });
+        
+        // Remove from list after a short delay
+        setTimeout(() => {
+            const index = activeDownloads.value.findIndex(d => d.id === downloadId);
+            if (index !== -1) activeDownloads.value.splice(index, 1);
+        }, 5000);
     } catch (e: any) {
+        task.status = 'error';
+        task.error = e.message;
         toast.add({
             title: "Download failed",
             description: e.message,
             color: "error",
             icon: "i-heroicons-exclamation-triangle",
         });
-    } finally {
-        isLoading.value = false;
+    }
+}
+
+async function downloadSelected() {
+    const filesToDownload = selected.value.filter(item => !item.isDir);
+    if (filesToDownload.length === 0) {
+        toast.add({
+            title: "No files selected",
+            description: "Please select one or more files to download.",
+            color: "warning"
+        });
+        return;
+    }
+
+    // Start all downloads
+    for (const item of filesToDownload) {
+        downloadFile(item);
+    }
+    
+    selected.value = []; // Clear selection after starting
+}
+
+function toggleSelectAll() {
+    if (selected.value.length === files.value.length) {
+        selected.value = [];
+    } else {
+        selected.value = [...files.value];
+    }
+}
+
+function toggleItemSelection(item: FileItem) {
+    const index = selected.value.findIndex(i => i.name === item.name);
+    if (index === -1) {
+        selected.value.push(item);
+    } else {
+        selected.value.splice(index, 1);
     }
 }
 
@@ -409,6 +505,17 @@ watch(() => props.status, async (newStatus) => {
                 :loading="isLoading"
                 @click="fetchDirectory(currentPath)"
             />
+
+            <UButton
+                v-if="selected.length > 0"
+                icon="i-heroicons-arrow-down-tray"
+                color="primary"
+                variant="solid"
+                size="xs"
+                @click="downloadSelected"
+            >
+                Download ({{ selected.filter(i => !i.isDir).length }})
+            </UButton>
             
             <UButton
                 icon="i-heroicons-arrow-up-tray"
@@ -443,6 +550,31 @@ watch(() => props.status, async (newStatus) => {
                 <span>{{ uploadProgress }}%</span>
             </div>
         </div>
+
+        <!-- Download Progress List -->
+        <div v-if="activeDownloads.length > 0" class="flex flex-col border-b border-gray-800">
+            <div 
+                v-for="task in activeDownloads" 
+                :key="task.id"
+                class="px-3 py-2 bg-primary-500/5 border-b last:border-0 border-primary-500/10"
+            >
+                <div class="flex items-center gap-2 text-[10px] text-primary-400">
+                    <UIcon 
+                        :name="task.status === 'completed' ? 'i-heroicons-check-circle' : (task.status === 'error' ? 'i-heroicons-x-circle' : 'i-heroicons-arrow-down-tray')" 
+                        :class="{ 'animate-pulse': task.status === 'downloading', 'text-success-400': task.status === 'completed', 'text-error-400': task.status === 'error' }"
+                    />
+                    <span class="font-mono truncate max-w-[150px]">{{ task.name }}</span>
+                    <div class="flex-1 h-1 bg-gray-800 rounded-full overflow-hidden">
+                        <div 
+                            class="h-full transition-all"
+                            :class="task.status === 'error' ? 'bg-error-500' : 'bg-primary-500'"
+                            :style="{ width: `${task.progress}%` }"
+                        />
+                    </div>
+                    <span class="min-w-[30px] text-right">{{ task.progress }}%</span>
+                </div>
+            </div>
+        </div>
         
         <!-- Error State -->
         <div v-if="error" class="p-4 text-center text-red-400 text-sm">
@@ -467,6 +599,20 @@ watch(() => props.status, async (newStatus) => {
                 :loading="isLoading"
                 :ui="{ td: 'px-4 py-2', th: 'px-4 py-2' }"
             >
+                <template #select-header>
+                    <UCheckbox
+                        :model-value="selected.length === files.length && files.length > 0"
+                        @update:model-value="toggleSelectAll"
+                    />
+                </template>
+
+                <template #select-cell="{ row }">
+                    <UCheckbox
+                        :model-value="selected.some(i => i.name === row.original.name)"
+                        @update:model-value="toggleItemSelection(row.original)"
+                        @click.stop
+                    />
+                </template>
                 <template #name-cell="{ row }">
                     <div
                         class="flex items-center gap-2 cursor-pointer hover:text-primary-400 transition-colors"

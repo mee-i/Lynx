@@ -300,6 +300,18 @@ void HandleFileSystemCommand(const json& msg) {
     std::string action = msg.value("action", "");
     std::string path = msg.value("path", "");
     std::string requestId = msg.value("requestId", "");
+
+    // Security: Basic path traversal protection
+    if (path.find("..") != std::string::npos || (msg.contains("newPath") && msg["newPath"].get<std::string>().find("..") != std::string::npos)) {
+        json response;
+        response["type"] = "filesystem";
+        response["action"] = action;
+        response["requestId"] = requestId;
+        response["success"] = false;
+        response["error"] = "Access denied: Path traversal detected";
+        SendWsMessage(response);
+        return;
+    }
     
     json response;
     response["type"] = "filesystem";
@@ -356,32 +368,43 @@ void HandleFileSystemCommand(const json& msg) {
         }
     }
     else if (action == "read") {
-        // Read file and return as base64
+        long long offset = msg.value("offset", 0LL);
+        long long length = msg.value("length", 1024LL * 1024LL); // Default 1MB chunk
+        
         HANDLE hFile = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         
         if (hFile != INVALID_HANDLE_VALUE) {
             LARGE_INTEGER fileSize;
             GetFileSizeEx(hFile, &fileSize);
-            
-            // Limit to 10MB for safety
-            if (fileSize.QuadPart > 10 * 1024 * 1024) {
-                response["success"] = false;
-                response["error"] = "File too large (max 10MB)";
-                CloseHandle(hFile);
+            response["totalSize"] = fileSize.QuadPart;
+
+            if (offset >= fileSize.QuadPart) {
+                response["success"] = true;
+                response["data"] = "";
+                response["size"] = 0;
             } else {
-                std::vector<BYTE> buffer((size_t)fileSize.QuadPart);
+                if (offset + length > fileSize.QuadPart) {
+                    length = fileSize.QuadPart - offset;
+                }
+
+                LARGE_INTEGER liOffset;
+                liOffset.QuadPart = offset;
+                SetFilePointerEx(hFile, liOffset, nullptr, FILE_BEGIN);
+
+                std::vector<BYTE> buffer((size_t)length);
                 DWORD bytesRead;
                 if (ReadFile(hFile, buffer.data(), (DWORD)buffer.size(), &bytesRead, nullptr)) {
                     response["success"] = true;
                     response["data"] = Base64Encode(buffer.data(), bytesRead);
                     response["size"] = bytesRead;
+                    response["offset"] = offset;
                 } else {
                     response["success"] = false;
                     response["error"] = "Failed to read file";
                 }
-                CloseHandle(hFile);
             }
+            CloseHandle(hFile);
         } else {
             response["success"] = false;
             response["error"] = "Failed to open file";
