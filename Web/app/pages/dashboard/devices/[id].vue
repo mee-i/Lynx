@@ -400,6 +400,9 @@ onUnmounted(() => {
 const editModalOpen = ref(false);
 const deleteModalOpen = ref(false);
 const editForm = reactive({ name: "", group: "" });
+const updateModalOpen = ref(false);
+const updateUrl = ref("");
+const isUpdating = ref(false);
 
 function openEditModal() {
     if (!device.value) return;
@@ -767,6 +770,12 @@ const powerItems = [
             icon: "i-heroicons-power",
             click: () => sendPowerCommand("shutdown"),
         },
+        {
+            label: "Update Agent",
+            icon: "i-heroicons-cloud-arrow-down",
+            color: "warning" as const,
+            click: () => { updateUrl.value = ""; updateModalOpen.value = true; },
+        },
     ],
 ];
 
@@ -800,6 +809,29 @@ function sendPowerCommand(action: "restart" | "shutdown") {
             color: "primary",
         });
     }
+}
+
+function sendUpdateCommand() {
+    if (!ws.value || !device.value || !updateUrl.value) return;
+    
+    isUpdating.value = true;
+    ws.value.send(
+        JSON.stringify({
+            type: "action",
+            action: "update",
+            url: updateUrl.value,
+        }),
+    );
+
+    useToast().add({
+        title: "Update command sent",
+        description: "The agent will now attempt to update itself.",
+        icon: "i-heroicons-cloud-arrow-down",
+        color: "primary",
+    });
+    
+    updateModalOpen.value = false;
+    isUpdating.value = false;
 }
 </script>
 
@@ -1621,6 +1653,31 @@ function sendPowerCommand(action: "restart" | "shutdown") {
                     <UButton color="error" @click="deleteDevice"
                         >Delete</UButton
                     >
+                </div>
+            </template>
+        </UModal>
+        <!-- Update Agent Modal -->
+        <UModal v-model:open="updateModalOpen">
+            <template #title>Update Agent</template>
+            <template #body>
+                <div class="flex flex-col gap-4">
+                     <p class="text-sm text-gray-400">Update agent for <span class="text-white font-medium">{{ device?.name }}</span>.</p>
+                     <div class="bg-primary-500/10 border border-primary-500/30 p-2 rounded text-xs text-primary-200">
+                        The agent will download the new binary, replace itself, and restart. 
+                        This will cause a brief disconnection.
+                     </div>
+                     <UFormField label="Update URL (Direct link to .exe)">
+                        <UInput
+                           v-model="updateUrl"
+                           placeholder="https://example.com/latest/agent.exe"
+                        />
+                     </UFormField>
+                </div>
+            </template>
+            <template #footer>
+                <div class="flex justify-end gap-2">
+                     <UButton color="neutral" variant="ghost" @click="updateModalOpen = false">Cancel</UButton>
+                     <UButton color="primary" :loading="isUpdating" @click="sendUpdateCommand">Start Update</UButton>
                 </div>
             </template>
         </UModal>

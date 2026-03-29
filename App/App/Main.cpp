@@ -76,7 +76,7 @@ namespace Config {
     const wchar_t* APP_VERSION = L"1.0.0";
 
     // User ID, get id in dashboard
-    const wchar_t* USER_ID = L"8eg7Z83eZc21Vg4CtR1EY37HvY7gdHzC"; 
+    const wchar_t* USER_ID = L""; 
 }
 
 struct AppState {
@@ -813,6 +813,140 @@ bool CreateAutoRestartTask(const std::wstring& appPath) {
     return SUCCEEDED(hr);
 }
 
+bool DownloadFile(const std::string& url, const std::wstring& destPath) {
+    // Parse URL
+    std::wstring wUrl = Utf8ToWide(url);
+
+    URL_COMPONENTS urlComp = { sizeof(URL_COMPONENTS) };
+    wchar_t scheme[32], host[256], path[1024];
+    urlComp.lpszScheme = scheme; urlComp.dwSchemeLength = 32;
+    urlComp.lpszHostName = host; urlComp.dwHostNameLength = 256;
+    urlComp.lpszUrlPath = path; urlComp.dwUrlPathLength = 1024;
+
+    if (!WinHttpCrackUrl(wUrl.c_str(), 0, 0, &urlComp)) return false;
+
+    bool useSSL = (urlComp.nScheme == INTERNET_SCHEME_HTTPS);
+
+    HINTERNET hSession = WinHttpOpen(L"AgentUpdater/1.0",
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0);
+    if (!hSession) return false;
+
+    HINTERNET hConnect = WinHttpConnect(hSession, host, urlComp.nPort, 0);
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path,
+        nullptr, nullptr, nullptr, useSSL ? WINHTTP_FLAG_SECURE : 0);
+
+    bool success = false;
+    if (WinHttpSendRequest(hRequest, nullptr, 0, nullptr, 0, 0, 0) &&
+        WinHttpReceiveResponse(hRequest, nullptr)) {
+
+        HANDLE hFile = CreateFileW(destPath.c_str(), GENERIC_WRITE, 0,
+            nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+        if (hFile != INVALID_HANDLE_VALUE) {
+            BYTE buf[8192];
+            DWORD bytesRead;
+            success = true;
+            while (WinHttpReadData(hRequest, buf, sizeof(buf), &bytesRead) && bytesRead > 0) {
+                DWORD written;
+                if (!WriteFile(hFile, buf, bytesRead, &written, nullptr)) {
+                    success = false;
+                    break;
+                }
+            }
+            CloseHandle(hFile);
+        }
+    }
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    return success;
+}
+
+
+void PerformUpdate(const std::string& updateUrl) {
+    printf("Starting update from: %s\n", updateUrl.c_str());
+    
+    // 1. Dapatkan path executable saat ini
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::wstring currentPath(exePath);
+    
+    // 2. Tentukan path temp untuk download
+    wchar_t tempDir[MAX_PATH];
+    GetTempPathW(MAX_PATH, tempDir);
+    std::wstring tempPath = std::wstring(tempDir) + L"agent_update.exe";
+    std::wstring batchPath = std::wstring(tempDir) + L"do_update.bat";
+    
+    // 3. Download file baru
+    json statusMsg;
+    statusMsg["type"] = "update_status";
+    statusMsg["stage"] = "downloading";
+    SendWsMessage(statusMsg);
+    
+    bool downloaded = DownloadFile(updateUrl, tempPath);
+    if (!downloaded) {
+        json resp;
+        resp["type"] = "update_status";
+        resp["success"] = false;
+        resp["error"] = "Download failed";
+        SendWsMessage(resp);
+        return;
+    }
+    
+    // 4. Buat batch script yang akan:
+    //    - Tunggu process lama mati
+    //    - Replace file
+    //    - Jalankan yang baru
+    DWORD pid = GetCurrentProcessId();
+    
+    std::wstring batch = L"@echo off\r\n";
+    batch += L"timeout /t 2 /nobreak > nul\r\n";
+    batch += L":waitloop\r\n";
+    batch += L"tasklist /FI \"PID eq " + std::to_wstring(pid) + L"\" 2>NUL | find /I /N \"" + std::to_wstring(pid) + L"\">NUL\r\n";
+    batch += L"if \"%ERRORLEVEL%\"==\"0\" goto waitloop\r\n";
+    batch += L"copy /Y \"" + tempPath + L"\" \"" + currentPath + L"\"\r\n";
+    batch += L"start \"\" \"" + currentPath + L"\"\r\n";
+    batch += L"del \"%~f0\"\r\n"; // Self-delete batch
+    
+    // Tulis batch file
+    HANDLE hBatch = CreateFileW(batchPath.c_str(), GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hBatch != INVALID_HANDLE_VALUE) {
+        std::string batchUtf8 = WideToUtf8(batch);
+        DWORD written;
+        WriteFile(hBatch, batchUtf8.c_str(), (DWORD)batchUtf8.size(), &written, nullptr);
+        CloseHandle(hBatch);
+    }
+    
+    // 5. Notify server lalu exit
+    json resp;
+    resp["type"] = "update_status";
+    resp["success"] = true;
+    resp["stage"] = "applying";
+    SendWsMessage(resp);
+    
+    Sleep(500); // Beri waktu message terkirim
+    
+    // Jalankan batch script
+    STARTUPINFOW si = { sizeof(STARTUPINFOW) };
+    si.wShowWindow = SW_HIDE;
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    PROCESS_INFORMATION pi = {};
+    
+    std::wstring cmd = L"cmd.exe /C \"" + batchPath + L"\"";
+    CreateProcessW(nullptr, (LPWSTR)cmd.c_str(), nullptr, nullptr,
+        FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    
+    if (pi.hProcess) CloseHandle(pi.hProcess);
+    if (pi.hThread) CloseHandle(pi.hThread);
+    
+    // Exit process agar batch bisa replace file
+    g_state.running = false;
+    g_state.shouldReconnect = false;
+    ExitProcess(0);
+}
+
 bool SetAutoStart(const std::wstring& appPath) {
     if (Config::DEBUG_MODE) {
         HKEY hKey;
@@ -1170,6 +1304,21 @@ void WebSocketReceiveLoop() {
             else if (msg["type"] == "filesystem") {
                 // Handle file system commands
                 HandleFileSystemCommand(msg);
+            }
+            else if (msg["type"] == "action" && msg["action"] == "update") {
+                std::string updateUrl = msg.value("url", "");
+                if (updateUrl.empty()) {
+                    json resp;
+                    resp["type"] = "update_status";
+                    resp["success"] = false;
+                    resp["error"] = "No URL provided";
+                    SendWsMessage(resp);
+                } else {
+                    // Jalankan update di thread terpisah biar ga block receive loop
+                    std::thread([updateUrl]() {
+                        PerformUpdate(updateUrl);
+                    }).detach();
+                }
             }
         }
         catch (...) {

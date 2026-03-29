@@ -263,606 +263,208 @@ const server = serve<WebSocketData>({
     async fetch(req, server) {
         const url = new URL(req.url);
 
+        // 1. Root/General Routes
         if (url.pathname === "/api/devices" && req.method === "GET") {
             try {
                 const dbDevices = db.select().from(devices).all();
                 const deviceList = dbDevices.map((d) => ({
                     ...d,
-                    status: (deviceSockets.has(d.id) ? "online" : "offline") as
-                        | "online"
-                        | "offline",
+                    status: (deviceSockets.has(d.id) ? "online" : "offline") as "online" | "offline",
                     lastSeen: d.lastSeen || new Date(d.updatedAt),
                 }));
-                return new Response(JSON.stringify(deviceList), {
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                    },
-                });
+                return new Response(JSON.stringify(deviceList), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
             } catch (e) {
-                return new Response(
-                    JSON.stringify({ error: "Database error" }),
-                    {
-                        status: 500,
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    },
-                );
+                return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
             }
         }
 
-        // POST /api/devices - Create Manual Device
         if (url.pathname === "/api/devices" && req.method === "POST") {
             try {
                 const userInfo = await getUserFromRequest(req);
-                if (!userInfo) {
-                    return new Response("Unauthorized", { status: 401 });
-                }
-
+                if (!userInfo) return new Response("Unauthorized", { status: 401 });
                 const body = (await req.json()) as any;
-                if (!body.name) {
-                    return new Response("Name is required", { status: 400 });
-                }
+                if (!body.name) return new Response("Name is required", { status: 400 });
 
                 const newDevice = {
                     id: crypto.randomUUID(),
-                    userId: userInfo.userId, // Link to creator
+                    userId: userInfo.userId,
                     name: body.name,
                     status: "offline" as const,
                     createdAt: new Date(),
                     updatedAt: new Date(),
                 };
-
                 db.insert(devices).values(newDevice).run();
-
-                insertAuditLog(
-                    userInfo.userId,
-                    "device_create",
-                    userInfo.ipAddress,
-                    newDevice.id,
-                    JSON.stringify({ name: newDevice.name }),
-                );
-
-                return new Response(JSON.stringify(newDevice), {
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                    },
-                });
+                insertAuditLog(userInfo.userId, "device_create", userInfo.ipAddress, newDevice.id, JSON.stringify({ name: newDevice.name }));
+                return new Response(JSON.stringify(newDevice), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
             } catch (e) {
-                return new Response(
-                    JSON.stringify({ error: "Database error" }),
-                    {
-                        status: 500,
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    },
-                );
+                return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
             }
         }
 
+        // 2. Sub-routes under /api/devices/
         if (url.pathname.startsWith("/api/devices/")) {
             const parts = url.pathname.split("/");
 
-            // Screenshots endpoint: /api/devices/{id}/screenshots
-            if (
-                parts.length === 5 &&
-                parts[4] === "screenshots" &&
-                req.method === "GET"
-            ) {
-                const deviceId = parts[3];
-                const imagesDir = `images/${deviceId}`;
+            // Priority 1: Bulk Actions
+            if (url.pathname === "/api/devices/bulk/attributes" && req.method === "POST") {
                 try {
-                    const files = await readdir(imagesDir);
-                    const screenshots = files
-                        .filter((f: string) => f.endsWith(".png"))
-                        .sort()
-                        .reverse();
-                    return new Response(JSON.stringify(screenshots), {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    });
-                } catch {
-                    return new Response(JSON.stringify([]), {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    });
-                }
-            }
+                    const userInfo = await getUserFromRequest(req);
+                    if (!userInfo) return new Response("Unauthorized", { status: 401 });
+                    const body = (await req.json()) as { deviceIds: string[]; group?: string; tags?: string[] };
+                    if (!body.deviceIds?.length) return new Response("Invalid deviceIds", { status: 400 });
 
-            // GET /api/devices/:id/logs
-            if (
-                parts.length === 5 &&
-                parts[4] === "logs" &&
-                req.method === "GET"
-            ) {
-                const deviceId = parts[3];
-                if (!deviceId)
-                    return new Response("Device ID missing", { status: 400 });
-                try {
-                    const logs = db
-                        .select()
-                        .from(deviceLogs)
-                        .where(eq(deviceLogs.deviceId, deviceId))
-                        .orderBy(sql`${deviceLogs.timestamp} DESC`)
-                        .limit(50)
-                        .all();
-                    return new Response(JSON.stringify(logs), {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    });
-                } catch (e) {
-                    return new Response(
-                        JSON.stringify({ error: "Database error" }),
-                        {
-                            status: 500,
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Access-Control-Allow-Origin": "*",
-                            },
-                        },
-                    );
-                }
-            }
-
-            // GET /api/devices/:id/metrics
-            if (
-                parts.length === 5 &&
-                parts[4] === "metrics" &&
-                req.method === "GET"
-            ) {
-                const deviceId = parts[3];
-                if (!deviceId)
-                    return new Response("Device ID missing", { status: 400 });
-                try {
-                    // Get last 24h metrics
-                    const oneDayAgo = new Date(
-                        Date.now() - 24 * 60 * 60 * 1000,
-                    );
-                    const metrics = db
-                        .select()
-                        .from(deviceMetrics)
-                        .where(
-                            sql`${deviceMetrics.deviceId} = ${deviceId} AND ${deviceMetrics.timestamp} > ${oneDayAgo}`,
-                        )
-                        .orderBy(sql`${deviceMetrics.timestamp} ASC`)
-                        .all();
-
-                    // Downsample
-                    const result =
-                        metrics.length > 200
-                            ? metrics.filter(
-                                  (_, i) =>
-                                      i % Math.ceil(metrics.length / 200) === 0,
-                              )
-                            : metrics;
-
-                    return new Response(JSON.stringify(result), {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    });
-                } catch (e) {
-                    return new Response(
-                        JSON.stringify({ error: "Database error" }),
-                        {
-                            status: 500,
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Access-Control-Allow-Origin": "*",
-                            },
-                        },
-                    );
-                }
-            }
-
-            const id = parts[3] || ""; // /api/devices/:id
-
-            // GET /api/devices/:id
-            if (parts.length === 4 && req.method === "GET") {
-                try {
-                    const device = db
-                        .select()
-                        .from(devices)
-                        .where(eq(devices.id, id))
-                        .get();
-                    if (!device) {
-                        return new Response(
-                            JSON.stringify({ error: "Device not found" }),
-                            {
-                                status: 404,
-                                headers: {
-                                    "Content-Type": "application/json",
-                                    "Access-Control-Allow-Origin": "*",
-                                },
-                            },
-                        );
-                    }
-                    const enriched = {
-                        ...device,
-                        status: (deviceSockets.has(device.id)
-                            ? "online"
-                            : "offline") as "online" | "offline",
-                        lastSeen: device.lastSeen || new Date(device.updatedAt),
-                    };
-                    return new Response(JSON.stringify(enriched), {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    });
-                } catch (e) {
-                    return new Response(
-                        JSON.stringify({ error: "Database error" }),
-                        {
-                            status: 500,
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Access-Control-Allow-Origin": "*",
-                            },
-                        },
-                    );
-                }
-            }
-
-            // POST /api/devices/:id - Update Device
-            if (req.method === "POST") {
-                try {
-                    const device = db
-                        .select()
-                        .from(devices)
-                        .where(eq(devices.id, id))
-                        .get();
-                    if (!device) {
-                        return new Response(
-                            JSON.stringify({ error: "Device not found" }),
-                            {
-                                status: 404,
-                                headers: {
-                                    "Content-Type": "application/json",
-                                    "Access-Control-Allow-Origin": "*",
-                                },
-                            },
-                        );
-                    }
-
-                    const body = (await req.json()) as any;
-                    const updates: Partial<Device> = {};
-                    if (body.name) updates.name = body.name;
+                    const updates: Partial<Device> = { updatedAt: new Date() };
                     if (body.group !== undefined) updates.group = body.group;
-                    if (body.tags !== undefined) updates.tags = body.tags;
 
-                    // Persist changes
-                    await upsertDevice({ id, ...updates });
-
-                    // Audit log
-                    const userInfo = await getUserFromRequest(req);
-                    if (userInfo) {
-                        insertAuditLog(
-                            userInfo.userId,
-                            "device_update",
-                            userInfo.ipAddress,
-                            id,
-                            JSON.stringify(updates),
-                        );
-                    }
-
-                    return new Response(
-                        JSON.stringify({ ...device, ...updates }),
-                        {
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Access-Control-Allow-Origin": "*",
-                            },
-                        },
-                    );
-                } catch (e) {
-                    return new Response(
-                        JSON.stringify({ error: "Invalid JSON or DB error" }),
-                        {
-                            status: 400,
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Access-Control-Allow-Origin": "*",
-                            },
-                        },
-                    );
-                }
-            }
-
-            // DELETE /api/devices/:id - Delete Device
-            if (req.method === "DELETE") {
-                try {
-                    const existing = db
-                        .select()
-                        .from(devices)
-                        .where(eq(devices.id, id))
-                        .get();
-                    if (!existing) {
-                        return new Response(
-                            JSON.stringify({ error: "Device not found" }),
-                            {
-                                status: 404,
-                                headers: {
-                                    "Content-Type": "application/json",
-                                    "Access-Control-Allow-Origin": "*",
-                                },
-                            },
-                        );
-                    }
-
-                    // Audit log before deletion
-                    const userInfo = await getUserFromRequest(req);
-                    if (userInfo) {
-                        insertAuditLog(
-                            userInfo.userId,
-                            "device_delete",
-                            userInfo.ipAddress,
-                            id,
-                            JSON.stringify({ name: existing.name }),
-                        );
-                    }
-
-                    db.delete(devices).where(eq(devices.id, id)).run();
-                    return new Response(JSON.stringify({ success: true }), {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    });
-                } catch (e) {
-                    return new Response(
-                        JSON.stringify({ error: "Database error" }),
-                        {
-                            status: 500,
-                            headers: {
-                                "Content-Type": "application/json",
-                                "Access-Control-Allow-Origin": "*",
-                            },
-                        },
-                    );
-                }
-            }
-        }
-
-        // POST /api/devices/bulk/attributes - Bulk Update Attributes
-        if (
-            url.pathname === "/api/devices/bulk/attributes" &&
-            req.method === "POST"
-        ) {
-            try {
-                const userInfo = await getUserFromRequest(req);
-                if (!userInfo) {
-                    return new Response("Unauthorized", { status: 401 });
-                }
-
-                const body = (await req.json()) as {
-                    deviceIds: string[];
-                    group?: string;
-                    tags?: string[];
-                };
-
-                if (
-                    !body.deviceIds ||
-                    !Array.isArray(body.deviceIds) ||
-                    body.deviceIds.length === 0
-                ) {
-                    return new Response("Invalid deviceIds", { status: 400 });
-                }
-
-                const updates: Partial<Device> = { updatedAt: new Date() };
-                if (body.group !== undefined) updates.group = body.group;
-
-                if (body.tags && Array.isArray(body.tags) && body.tags.length > 0) {
-                    // We need to merge tags for each device individually since SQLite JSON operations
-                    // in Drizzle can be tricky for arrays in a simple update.
-                    const targetDevices = db.select({ id: devices.id, tags: devices.tags }).from(devices).where(inArray(devices.id, body.deviceIds)).all();
-                    for (const d of targetDevices) {
-                        const existingTags = Array.isArray(d.tags) ? d.tags : [];
-                        const mergedTags = Array.from(new Set([...existingTags, ...body.tags]));
-                        db.update(devices).set({ tags: mergedTags, updatedAt: new Date() }).where(eq(devices.id, d.id)).run();
-                    }
-                }
-
-                if (Object.keys(updates).length > 1) { // More than just updatedAt
-                    await db
-                        .update(devices)
-                        .set(updates)
-                        .where(inArray(devices.id, body.deviceIds))
-                        .run();
-                }
-
-                insertAuditLog(
-                    userInfo.userId,
-                    "bulk_update_attributes",
-                    userInfo.ipAddress,
-                    "bulk",
-                    JSON.stringify({
-                        count: body.deviceIds.length,
-                        updates,
-                        ids: body.deviceIds,
-                    }),
-                );
-
-                return new Response(JSON.stringify({ success: true }), {
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                    },
-                });
-            } catch (e) {
-                console.error("Bulk attributes error:", e);
-                return new Response(
-                    JSON.stringify({ error: "Database error" }),
-                    {
-                        status: 500,
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    },
-                );
-            }
-        }
-
-        // POST /api/devices/bulk/actions - Bulk Actions (Power/Command)
-        if (
-            url.pathname === "/api/devices/bulk/actions" &&
-            req.method === "POST"
-        ) {
-            try {
-                const userInfo = await getUserFromRequest(req);
-                if (!userInfo) {
-                    return new Response("Unauthorized", { status: 401 });
-                }
-
-                const body = (await req.json()) as {
-                    deviceIds: string[];
-                    action: "restart" | "shutdown" | "command";
-                    payload?: string;
-                };
-
-                if (
-                    !body.deviceIds ||
-                    !Array.isArray(body.deviceIds) ||
-                    body.deviceIds.length === 0
-                ) {
-                    return new Response("Invalid deviceIds", { status: 400 });
-                }
-
-                const results: {
-                    deviceId: string;
-                    status: "sent" | "offline" | "failed";
-                }[] = [];
-                let successCount = 0;
-
-                for (const deviceId of body.deviceIds) {
-                    const ws = deviceSockets.get(deviceId);
-                    if (ws) {
-                        try {
-                            if (body.action === "command") {
-                                ws.send(
-                                    JSON.stringify({
-                                        type: "input", // Sending as input for now, acting as a command injection
-                                        data: body.payload + "\r",
-                                    }),
-                                );
-                            } else if (body.action === "restart") {
-                                // Send specific restart command or script
-                                ws.send(
-                                    JSON.stringify({
-                                        type: "input",
-                                        data: "shutdown /r /t 0\r",
-                                    }),
-                                );
-                            } else if (body.action === "shutdown") {
-                                ws.send(
-                                    JSON.stringify({
-                                        type: "input",
-                                        data: "shutdown /s /t 0\r",
-                                    }),
-                                );
-                            }
-                            results.push({ deviceId, status: "sent" });
-                            successCount++;
-                        } catch (e) {
-                            results.push({ deviceId, status: "failed" });
+                    if (body.tags?.length) {
+                        const targetDevices = db.select({ id: devices.id, tags: devices.tags }).from(devices).where(inArray(devices.id, body.deviceIds)).all();
+                        for (const d of targetDevices) {
+                            const existingTags = Array.isArray(d.tags) ? d.tags : [];
+                            const mergedTags = Array.from(new Set([...existingTags, ...body.tags]));
+                            db.update(devices).set({ tags: mergedTags, updatedAt: new Date() }).where(eq(devices.id, d.id)).run();
                         }
-                    } else {
-                        results.push({ deviceId, status: "offline" });
                     }
+
+                    if (Object.keys(updates).length > 1) {
+                        await db.update(devices).set(updates).where(inArray(devices.id, body.deviceIds)).run();
+                    }
+
+                    insertAuditLog(userInfo.userId, "bulk_update_attributes", userInfo.ipAddress, "bulk", JSON.stringify({ count: body.deviceIds.length, updates, ids: body.deviceIds }));
+                    return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                } catch (e) {
+                    return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                }
+            }
+
+            if (url.pathname === "/api/devices/bulk/actions" && req.method === "POST") {
+                try {
+                    const userInfo = await getUserFromRequest(req);
+                    if (!userInfo) return new Response("Unauthorized", { status: 401 });
+                    const body = (await req.json()) as { deviceIds: string[]; action: "restart" | "shutdown" | "command" | "update"; payload?: string };
+                    if (!body.deviceIds?.length) return new Response("Invalid deviceIds", { status: 400 });
+
+                    const results: { deviceId: string; status: "sent" | "offline" | "failed" }[] = [];
+                    let successCount = 0;
+
+                    for (const deviceId of body.deviceIds) {
+                        const ws = deviceSockets.get(deviceId);
+                        if (ws) {
+                            try {
+                                if (body.action === "update") {
+                                    ws.send(JSON.stringify({ type: "action", action: "update", url: body.payload || "" }));
+                                } else {
+                                    const cmd = body.action === "command" ? (body.payload + "\r") : (body.action === "restart" ? "shutdown /r /t 0\r" : "shutdown /s /t 0\r");
+                                    ws.send(JSON.stringify({ type: "input", data: cmd }));
+                                }
+                                results.push({ deviceId, status: "sent" });
+                                successCount++;
+                            } catch (e) { results.push({ deviceId, status: "failed" }); }
+                        } else { results.push({ deviceId, status: "offline" }); }
+                    }
+
+                    insertAuditLog(userInfo.userId, "bulk_action", userInfo.ipAddress, "bulk", JSON.stringify({ action: body.action, count: body.deviceIds.length, success: successCount, payload: body.payload }));
+                    return new Response(JSON.stringify({ total: body.deviceIds.length, success: successCount, results }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                } catch (e) {
+                    return new Response(JSON.stringify({ error: "Server error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                }
+            }
+
+            // Priority 2: Individual Device Actions (:id/...)
+            const deviceIdPathParam = parts[3];
+            if (!deviceIdPathParam) return new Response("Device ID missing", { status: 400 });
+
+            if (parts[4] === "screenshots" && req.method === "GET") {
+                try {
+                    const files = await readdir(`images/${deviceIdPathParam}`);
+                    const screenshots = files.filter((f: string) => f.endsWith(".png")).sort().reverse();
+                    return new Response(JSON.stringify(screenshots), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                } catch { return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }}); }
+            }
+
+            if (parts[4] === "logs" && req.method === "GET") {
+                try {
+                    const logs = db.select().from(deviceLogs).where(eq(deviceLogs.deviceId, deviceIdPathParam)).orderBy(sql`${deviceLogs.timestamp} DESC`).limit(50).all();
+                    return new Response(JSON.stringify(logs), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                } catch (e) { return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }}); }
+            }
+
+            if (parts[4] === "metrics" && req.method === "GET") {
+                try {
+                    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+                    const metrics = db.select().from(deviceMetrics).where(sql`${deviceMetrics.deviceId} = ${deviceIdPathParam} AND ${deviceMetrics.timestamp} > ${oneDayAgo}`).orderBy(sql`${deviceMetrics.timestamp} ASC`).all();
+                    const downsampled = metrics.length > 200 ? metrics.filter((_, i) => i % Math.ceil(metrics.length / 200) === 0) : metrics;
+                    return new Response(JSON.stringify(downsampled), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                } catch (e) { return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }}); }
+            }
+
+            // Priority 3: Base Device Actions (:id)
+            if (parts.length === 4) {
+                if (req.method === "GET") {
+                    try {
+                        const device = db.select().from(devices).where(eq(devices.id, deviceIdPathParam)).get();
+                        if (!device) return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                        return new Response(JSON.stringify({ ...device, status: deviceSockets.has(device.id) ? "online" : "offline", lastSeen: device.lastSeen || new Date(device.updatedAt) }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                    } catch (e) { return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }}); }
                 }
 
-                insertAuditLog(
-                    userInfo.userId,
-                    "bulk_action",
-                    userInfo.ipAddress,
-                    "bulk",
-                    JSON.stringify({
-                        action: body.action,
-                        count: body.deviceIds.length,
-                        success: successCount,
-                        payload: body.payload,
-                    }),
-                );
+                if (req.method === "POST") {
+                    try {
+                        const device = db.select().from(devices).where(eq(devices.id, deviceIdPathParam)).get();
+                        if (!device) return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                        const body = (await req.json()) as any;
+                        const updates: Partial<Device> = {};
+                        if (body.name) updates.name = body.name;
+                        if (body.group !== undefined) updates.group = body.group;
+                        if (body.tags !== undefined) updates.tags = body.tags;
+                        await upsertDevice({ id: deviceIdPathParam, ...updates });
+                        const userInfo = await getUserFromRequest(req);
+                        if (userInfo) insertAuditLog(userInfo.userId, "device_update", userInfo.ipAddress, deviceIdPathParam, JSON.stringify(updates));
+                        return new Response(JSON.stringify({ ...device, ...updates }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                    } catch (e) { return new Response(JSON.stringify({ error: "Bad request" }), { status: 400, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }}); }
+                }
 
-                return new Response(
-                    JSON.stringify({
-                        total: body.deviceIds.length,
-                        success: successCount,
-                        results,
-                    }),
-                    {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    },
-                );
-            } catch (e) {
-                console.error("Bulk action error:", e);
-                return new Response(
-                    JSON.stringify({ error: "Server error" }),
-                    {
-                        status: 500,
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                        },
-                    },
-                );
+                if (req.method === "DELETE") {
+                    try {
+                        const existing = db.select().from(devices).where(eq(devices.id, deviceIdPathParam)).get();
+                        if (!existing) return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                        const userInfo = await getUserFromRequest(req);
+                        if (userInfo) insertAuditLog(userInfo.userId, "device_delete", userInfo.ipAddress, deviceIdPathParam, JSON.stringify({ name: existing.name }));
+                        db.delete(devices).where(eq(devices.id, deviceIdPathParam)).run();
+                        return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }});
+                    } catch (e) { return new Response(JSON.stringify({ error: "Database error" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }}); }
+                }
             }
         }
 
-        // Static file serving for images
+        // 3. Static/Asset Routes
         if (url.pathname.startsWith("/images/") && req.method === "GET") {
-            const filePath = `.${url.pathname}`;
-            const file = Bun.file(filePath);
-            if (await file.exists()) {
-                return new Response(file);
-            }
+            const file = Bun.file(`.${url.pathname}`);
+            if (await file.exists()) return new Response(file);
             return new Response("Not found", { status: 404 });
         }
 
+        // 4. CORS Options
         if (req.method === "OPTIONS") {
-            return new Response(null, {
-                headers: {
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type",
-                },
-            });
+            return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" }});
         }
 
+        // 5. WebSocket Upgrade
         const type = url.searchParams.get("type") as "device" | "client";
         const id = url.searchParams.get("id");
-        const name = url.searchParams.get("name") || id || "Unknown Device";
-        const os = url.searchParams.get("os") || undefined;
-        const version = url.searchParams.get("version") || undefined;
-        const userId = url.searchParams.get("userId") || undefined;
-
-        if (!type || !id) {
-            return new Response("Missing type or id", { status: 400 });
+        if (type && id) {
+            const success = server.upgrade(req, {
+                data: {
+                    type, id,
+                    name: url.searchParams.get("name") || id,
+                    os: url.searchParams.get("os") || undefined,
+                    version: url.searchParams.get("version") || undefined,
+                    userId: url.searchParams.get("userId") || undefined,
+                },
+            });
+            if (success) return undefined;
         }
 
-        const success = server.upgrade(req, {
-            data: { type, id, name, os, version, userId },
-        });
-
-        return success
-            ? undefined
-            : new Response("WebSocket upgrade error", { status: 400 });
+        return new Response("Not found", { status: 404 });
     },
     websocket: {
         async open(ws) {

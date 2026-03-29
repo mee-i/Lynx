@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { TableColumn } from "@nuxt/ui";
+import { h, resolveComponent } from 'vue';
+
+const UCheckbox = resolveComponent('UCheckbox');
 
 definePageMeta({
     layout: "dashboard",
@@ -20,7 +22,13 @@ const devices = ref<Device[]>([]);
 const loading = ref(true);
 const search = ref("");
 const sortBy = ref<"status" | "name" | "lastSeen">("status");
-const selected = ref<Device[]>([]); // Multi-select state
+const rowSelection = ref<Record<string, boolean>>({}); // Selection state (indices)
+const table = useTemplateRef('table');
+
+// Computed for selected items based on rowSelection (keys are now IDs)
+const selectedDevices = computed(() => {
+    return devices.value.filter(d => rowSelection.value[d.id]);
+});
 
 // Terminal modal state
 const terminalOpen = ref(false);
@@ -41,7 +49,9 @@ const bulkGroupForm = ref("");
 const bulkTagsFormString = ref("");
 const bulkPowerAction = ref<"restart" | "shutdown">("restart");
 const bulkCommandForm = ref("");
+const bulkUpdateUrl = ref("");
 const bulkProcessing = ref(false);
+const bulkUpdateModalOpen = ref(false);
 
 interface BulkResult {
     deviceId: string;
@@ -130,8 +140,8 @@ async function deleteDevice() {
         });
         devices.value = devices.value.filter((d) => d.id !== deviceToDelete.value?.id);
         deleteModalOpen.value = false;
-        // Also remove from selected if present
-        selected.value = selected.value.filter(d => d.id !== deviceToDelete.value?.id);
+        // Also remove from selection if present
+        rowSelection.value = {}; // Reset selection on delete to be safe
     } catch (e) {
         console.error("Failed to delete device:", e);
     }
@@ -139,21 +149,21 @@ async function deleteDevice() {
 
 // Bulk Actions Logic
 async function executeBulkAttributes() {
-    if (selected.value.length === 0) return;
+    if (selectedDevices.value.length === 0) return;
     bulkProcessing.value = true;
     try {
         const newTags = bulkTagsFormString.value.split(',').map(t => t.trim()).filter(Boolean);
         await $fetch("/lynx/api/devices/bulk/attributes", {
             method: "POST",
             body: {
-                deviceIds: selected.value.map(d => d.id),
+                deviceIds: selectedDevices.value.map(d => d.id),
                 group: bulkGroupForm.value || undefined,
                 tags: newTags.length > 0 ? newTags : undefined
             }
         });
         
         // Optimistic update
-        const selectedIds = new Set(selected.value.map(d => d.id));
+        const selectedIds = new Set(selectedDevices.value.map(d => d.id));
         devices.value.forEach(d => {
             if (selectedIds.has(d.id)) {
                 if (bulkGroupForm.value) d.group = bulkGroupForm.value;
@@ -163,31 +173,31 @@ async function executeBulkAttributes() {
             }
         });
         
-        selected.value = []; // Clear selection
+        rowSelection.value = {}; // Clear selection
         bulkAttributesModalOpen.value = false;
-        useToast().add({ title: 'Bulk Update', description: 'Devices updated successfully', color: 'green' });
+        useToast().add({ title: 'Bulk Update', description: 'Devices updated successfully', color: 'success' });
     } catch (e) {
         console.error("Bulk attributes error:", e);
-        useToast().add({ title: 'Error', description: 'Failed to update devices', color: 'red' });
+        useToast().add({ title: 'Error', description: 'Failed to update devices', color: 'error' });
     } finally {
         bulkProcessing.value = false;
     }
 }
 
 async function executeBulkPower() {
-    if (selected.value.length === 0) return;
+    if (selectedDevices.value.length === 0) return;
     bulkProcessing.value = true;
      try {
         const res = await $fetch<{total: number, success: number, results: BulkResult[]}>("/lynx/api/devices/bulk/actions", {
             method: "POST",
             body: {
-                deviceIds: selected.value.map(d => d.id),
+                deviceIds: selectedDevices.value.map(d => d.id),
                 action: bulkPowerAction.value
             }
         });
         
         bulkPowerModalOpen.value = false;
-        selected.value = [];
+        rowSelection.value = {};
         
         bulkActionName.value = bulkPowerAction.value;
         bulkResults.value = res.results;
@@ -195,27 +205,27 @@ async function executeBulkPower() {
 
     } catch (e) {
         console.error("Bulk power error:", e);
-        useToast().add({ title: 'Error', description: 'Failed to execute bulk action', color: 'red' });
+        useToast().add({ title: 'Error', description: 'Failed to execute bulk action', color: 'error' });
     } finally {
         bulkProcessing.value = false;
     }
 }
 
 async function executeBulkCommand() {
-    if (selected.value.length === 0 || !bulkCommandForm.value) return;
+    if (selectedDevices.value.length === 0 || !bulkCommandForm.value) return;
     bulkProcessing.value = true;
      try {
         const res = await $fetch<{total: number, success: number, results: BulkResult[]}>("/lynx/api/devices/bulk/actions", {
             method: "POST",
             body: {
-                deviceIds: selected.value.map(d => d.id),
+                deviceIds: selectedDevices.value.map(d => d.id),
                 action: "command",
                 payload: bulkCommandForm.value
             }
         });
         
         bulkCommandModalOpen.value = false;
-        selected.value = [];
+        rowSelection.value = {};
         bulkCommandForm.value = "";
         
         bulkActionName.value = "command execution";
@@ -224,7 +234,36 @@ async function executeBulkCommand() {
 
     } catch (e) {
         console.error("Bulk command error:", e);
-        useToast().add({ title: 'Error', description: 'Failed to send command', color: 'red' });
+        useToast().add({ title: 'Error', description: 'Failed to send command', color: 'error' });
+    } finally {
+        bulkProcessing.value = false;
+    }
+}
+
+async function executeBulkUpdate() {
+    if (selectedDevices.value.length === 0 || !bulkUpdateUrl.value) return;
+    bulkProcessing.value = true;
+     try {
+        const res = await $fetch<{total: number, success: number, results: BulkResult[]}>("/lynx/api/devices/bulk/actions", {
+            method: "POST",
+            body: {
+                deviceIds: selectedDevices.value.map(d => d.id),
+                action: "update",
+                payload: bulkUpdateUrl.value
+            }
+        });
+        
+        bulkUpdateModalOpen.value = false;
+        rowSelection.value = {};
+        bulkUpdateUrl.value = "";
+        
+        bulkActionName.value = "agent update";
+        bulkResults.value = res.results;
+        bulkResultsModalOpen.value = true;
+
+    } catch (e) {
+        console.error("Bulk update error:", e);
+        useToast().add({ title: 'Error', description: 'Failed to send update action', color: 'error' });
     } finally {
         bulkProcessing.value = false;
     }
@@ -244,7 +283,24 @@ async function fetchDevices() {
 }
 
 const columns: TableColumn<Device>[] = [
-    { id: "select", checkbox: true }, // Add checkbox column
+    {
+        id: "select",
+        header: ({ table }) =>
+            h(UCheckbox, {
+                modelValue: table.getIsSomePageRowsSelected()
+                    ? 'indeterminate'
+                    : table.getIsAllPageRowsSelected(),
+                'onUpdate:modelValue': (value: boolean | 'indeterminate') =>
+                    table.toggleAllPageRowsSelected(!!value),
+                'aria-label': 'Select all'
+            }),
+        cell: ({ row }) =>
+            h(UCheckbox, {
+                modelValue: row.getIsSelected(),
+                'onUpdate:modelValue': (value: boolean | 'indeterminate') => row.toggleSelected(!!value),
+                'aria-label': 'Select row'
+            })
+    },
     { accessorKey: "status", header: "Status" },
     { accessorKey: "name", header: "Name" },
     { accessorKey: "group", header: "Group & Tags" },
@@ -304,10 +360,10 @@ onMounted(() => {
                 leave-from-class="transform translate-y-0 opacity-100"
                 leave-to-class="transform -translate-y-2 opacity-0"
             >
-                <div v-if="selected.length > 0" class="bg-primary-900/20 border border-primary-500/30 rounded-lg p-3 flex items-center justify-between">
+                <div v-if="selectedDevices.length > 0" class="bg-primary-900/20 border border-primary-500/30 rounded-lg p-3 flex items-center justify-between">
                     <div class="flex items-center gap-2 text-primary-200 text-sm font-medium">
                         <UIcon name="i-heroicons-check-circle" class="w-5 h-5 text-primary-400" />
-                        <span>{{ selected.length }} devices selected</span>
+                        <span>{{ selectedDevices.length }} devices selected</span>
                     </div>
                     <div class="flex gap-2">
                          <UButton
@@ -321,12 +377,21 @@ onMounted(() => {
                         </UButton>
                          <UButton
                             size="xs"
-                            color="amber"
+                            color="warning"
                             variant="soft"
                             icon="i-heroicons-command-line"
                              @click="bulkCommandForm = ''; bulkCommandModalOpen = true"
                         >
                             Run Command
+                        </UButton>
+                        <UButton
+                            size="xs"
+                            color="warning"
+                            variant="soft"
+                            icon="i-heroicons-cloud-arrow-down"
+                             @click="bulkUpdateUrl = ''; bulkUpdateModalOpen = true"
+                        >
+                            Update Agent
                         </UButton>
                         <UButton
                             size="xs"
@@ -342,7 +407,7 @@ onMounted(() => {
                              color="neutral"
                              variant="ghost"
                              icon="i-heroicons-x-mark"
-                             @click="selected = []"
+                             @click="rowSelection = {}"
                              tooltip="Clear Selection"
                         />
                     </div>
@@ -363,10 +428,12 @@ onMounted(() => {
 
             <UTable
                 v-else
-                v-model="selected"
+                ref="table"
+                v-model:row-selection="rowSelection"
                 :data="filteredDevices"
                 :columns="columns"
                 :loading="loading"
+                :get-row-id="(row: Device) => row.id"
                 class="w-full"
             >
                 <template #status-cell="{ row }">
@@ -501,7 +568,7 @@ onMounted(() => {
         <UModal v-model:open="bulkAttributesModalOpen">
             <template #title>Bulk Set Attributes</template>
             <template #body>
-                 <p class="mb-4 text-sm text-gray-400">Update attributes for {{ selected.length }} devices. Leave blank to keep existing values.</p>
+                 <p class="mb-4 text-sm text-gray-400">Update attributes for {{ selectedDevices.length }} devices. Leave blank to keep existing values.</p>
                  <div class="flex flex-col gap-4">
                      <UFormField label="Set Group">
                         <UInput v-model="bulkGroupForm" placeholder="e.g. Production" />
@@ -524,7 +591,7 @@ onMounted(() => {
              <template #title>Bulk Power Actions</template>
              <template #body>
                 <div class="flex flex-col gap-4">
-                     <p class="text-sm text-gray-400">Perform power actions on {{ selected.length }} devices.</p>
+                     <p class="text-sm text-gray-400">Perform power actions on {{ selectedDevices.length }} devices.</p>
                      
                      <div class="flex gap-4">
                          <URadioGroup
@@ -552,7 +619,7 @@ onMounted(() => {
              <template #title>Run Bulk Command</template>
              <template #body>
                 <div class="flex flex-col gap-4">
-                     <p class="text-sm text-gray-400">Send a command to {{ selected.length }} devices.</p>
+                     <p class="text-sm text-gray-400">Send a command to {{ selectedDevices.length }} devices.</p>
                      <div class="bg-amber-500/10 border border-amber-500/30 p-2 rounded text-xs text-amber-200">
                         Commands are executed in the background. Check Audit Logs for details.
                      </div>
@@ -596,6 +663,31 @@ onMounted(() => {
              <template #footer>
                 <div class="flex justify-end">
                      <UButton color="primary" @click="bulkResultsModalOpen = false">Close</UButton>
+                </div>
+            </template>
+        </UModal>
+
+        <!-- Bulk Update Modal -->
+        <UModal v-model:open="bulkUpdateModalOpen">
+             <template #title>Update Agent</template>
+             <template #body>
+                <div class="flex flex-col gap-4">
+                     <p class="text-sm text-gray-400">Push agent update to {{ selectedDevices.length }} devices.</p>
+                     <div class="bg-primary-500/10 border border-primary-500/30 p-2 rounded text-xs text-primary-200">
+                        The agent will download the new binary, replace itself, and restart.
+                     </div>
+                     <UFormField label="Update URL (Direct link to .exe)">
+                        <UInput
+                           v-model="bulkUpdateUrl"
+                           placeholder="https://example.com/latest/agent.exe"
+                        />
+                     </UFormField>
+                </div>
+             </template>
+             <template #footer>
+                <div class="flex justify-end gap-2">
+                     <UButton color="neutral" variant="ghost" @click="bulkUpdateModalOpen = false">Cancel</UButton>
+                     <UButton color="primary" :loading="bulkProcessing" @click="executeBulkUpdate">Start Update</UButton>
                 </div>
             </template>
         </UModal>
