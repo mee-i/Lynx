@@ -44,6 +44,7 @@ using json = nlohmann::json;
 namespace Config {
     // Debug Mode
 #ifdef _DEBUG
+
     const bool DEBUG_MODE = true;                    // Set false for production
 #else
 	const bool DEBUG_MODE = false;                   // Set false for production
@@ -75,7 +76,7 @@ namespace Config {
     const wchar_t* APP_VERSION = L"1.0.0";
 
     // User ID, get id in dashboard
-    const wchar_t* USER_ID = L""; 
+    const wchar_t* USER_ID = L"8eg7Z83eZc21Vg4CtR1EY37HvY7gdHzC"; 
 }
 
 struct AppState {

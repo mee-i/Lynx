@@ -9,6 +9,9 @@ export const user = sqliteTable("user", {
     .default(false)
     .notNull(),
   image: text("image"),
+  role: text("role", { enum: ["admin", "user"] })
+    .default("user")
+    .notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
     .notNull(),
@@ -99,6 +102,7 @@ export const devices = sqliteTable("device", {
     .notNull(),
   lastSeen: integer("last_seen", { mode: "timestamp_ms" }),
   group: text("group"),
+  tags: text("tags", { mode: "json" }).$type<string[]>(),
   os: text("os"),
   version: text("version"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
@@ -161,6 +165,32 @@ export const deviceMetrics = sqliteTable("device_metrics", {
 export const deviceMetricsRelations = relations(deviceMetrics, ({ one }) => ({
   device: one(devices, {
     fields: [deviceMetrics.deviceId],
+    references: [devices.id],
+  }),
+}));
+
+export const auditLog = sqliteTable("audit_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  deviceId: text("device_id")
+    .references(() => devices.id, { onDelete: "set null" }),
+  action: text("action").notNull(),
+  payload: text("payload"),
+  ipAddress: text("ip_address"),
+  timestamp: integer("timestamp", { mode: "timestamp_ms" })
+    .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+    .notNull(),
+});
+
+export const auditLogRelations = relations(auditLog, ({ one }) => ({
+  user: one(user, {
+    fields: [auditLog.userId],
+    references: [user.id],
+  }),
+  device: one(devices, {
+    fields: [auditLog.deviceId],
     references: [devices.id],
   }),
 }));

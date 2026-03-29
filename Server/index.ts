@@ -1,8 +1,16 @@
 import { serve } from "bun";
 import type { ServerWebSocket } from "bun";
 import { readdir } from "node:fs/promises";
-import { db, devices, deviceLogs, deviceMetrics, type Device } from "./db";
-import { eq, sql } from "drizzle-orm";
+import {
+    db,
+    devices,
+    deviceLogs,
+    deviceMetrics,
+    sessions,
+    auditLog,
+    type Device,
+} from "./db";
+import { eq, and, gt, sql, inArray } from "drizzle-orm";
 
 const deviceSockets = new Map<string, ServerWebSocket<WebSocketData>>();
 const clients = new Map<string, ServerWebSocket<WebSocketData>>();
@@ -50,6 +58,7 @@ async function logDeviceEvent(
 // Upsert device to SQLite
 async function upsertDevice(
     device: Partial<Device> & { id: string; userId?: string | null },
+    auditContext?: { ipAddress: string; userId?: string },
 ) {
     try {
         const existing = db
@@ -86,6 +95,7 @@ async function upsertDevice(
                         status: device.status || "offline",
                         lastSeen: device.lastSeen || new Date(),
                         group: device.group || null,
+                        tags: device.tags || null,
                         os: device.os || null,
                         version: device.version || null,
                         createdAt: new Date(),
@@ -95,6 +105,17 @@ async function upsertDevice(
                 console.log(
                     `[device] Registered ${device.id} to user ${targetUserId}`,
                 );
+
+                // Audit Log for Auto-Registration
+                if (auditContext) {
+                    insertAuditLog(
+                        auditContext.userId || targetUserId,
+                        "device_register",
+                        auditContext.ipAddress,
+                        device.id,
+                        JSON.stringify({ name: device.name || device.id }),
+                    );
+                }
             } else {
                 console.error(
                     `[device] Cannot register ${device.id}: No users found in database.`,
@@ -108,6 +129,93 @@ async function upsertDevice(
 
 // Load on startup
 await loadDevices();
+
+// Helper: Extract user from request cookies by validating session
+async function getUserFromRequest(
+    req: Request,
+): Promise<{ userId: string; ipAddress: string } | null> {
+    try {
+        const cookieHeader = req.headers.get("cookie");
+        if (!cookieHeader) {
+            console.log("[Auth] No cookie header found");
+            return null;
+        }
+
+        // Parse cookies to find 'better-auth.session_token'
+        const cookies = Object.fromEntries(
+            cookieHeader.split(";").map((c) => {
+                const [key, ...val] = c.trim().split("=");
+                return [key, val.join("=")];
+            }),
+        );
+
+        let token = cookies["better-auth.session_token"];
+        if (!token) {
+            console.log("[Auth] No session token found in cookies");
+            return null;
+        }
+
+        // Handle signed tokens (token.signature) - take the first part
+        if (token.includes(".")) {
+            token = token.split(".")[0];
+        }
+
+        // Validate session against DB
+        const sess = db
+            .select()
+            .from(sessions)
+            .where(
+                and(
+                    eq(sessions.token, token),
+                    gt(sessions.expiresAt, new Date()),
+                ),
+            )
+            .get();
+
+        if (!sess) {
+            console.log("[Auth] Session invalid or expired");
+            return null;
+        }
+
+        // Extract IP from request headers
+        const ipAddress =
+            req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+            req.headers.get("x-real-ip") ||
+            "unknown";
+
+        return { userId: sess.userId, ipAddress };
+    } catch (e) {
+        console.error("Failed to validate session:", e);
+        return null;
+    }
+}
+
+// Helper: Insert audit log entry
+function insertAuditLog(
+    userId: string,
+    action: string,
+    ipAddress: string,
+    deviceId?: string,
+    payload?: string,
+) {
+    try {
+        db.insert(auditLog)
+            .values({
+                userId,
+                action,
+                deviceId: deviceId || null,
+                payload: payload || null,
+                ipAddress,
+                timestamp: new Date(),
+            })
+            .run();
+        console.log(
+            `[audit] ${userId} ${action}${deviceId ? ` device:${deviceId}` : ""}`,
+        );
+    } catch (e) {
+        console.error("Failed to insert audit log:", e);
+    }
+}
 
 type WebSocketData = {
     type: "device" | "client";
@@ -166,6 +274,58 @@ const server = serve<WebSocketData>({
                     lastSeen: d.lastSeen || new Date(d.updatedAt),
                 }));
                 return new Response(JSON.stringify(deviceList), {
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Access-Control-Allow-Origin": "*",
+                    },
+                });
+            } catch (e) {
+                return new Response(
+                    JSON.stringify({ error: "Database error" }),
+                    {
+                        status: 500,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    },
+                );
+            }
+        }
+
+        // POST /api/devices - Create Manual Device
+        if (url.pathname === "/api/devices" && req.method === "POST") {
+            try {
+                const userInfo = await getUserFromRequest(req);
+                if (!userInfo) {
+                    return new Response("Unauthorized", { status: 401 });
+                }
+
+                const body = (await req.json()) as any;
+                if (!body.name) {
+                    return new Response("Name is required", { status: 400 });
+                }
+
+                const newDevice = {
+                    id: crypto.randomUUID(),
+                    userId: userInfo.userId, // Link to creator
+                    name: body.name,
+                    status: "offline" as const,
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                };
+
+                db.insert(devices).values(newDevice).run();
+
+                insertAuditLog(
+                    userInfo.userId,
+                    "device_create",
+                    userInfo.ipAddress,
+                    newDevice.id,
+                    JSON.stringify({ name: newDevice.name }),
+                );
+
+                return new Response(JSON.stringify(newDevice), {
                     headers: {
                         "Content-Type": "application/json",
                         "Access-Control-Allow-Origin": "*",
@@ -381,9 +541,22 @@ const server = serve<WebSocketData>({
                     const updates: Partial<Device> = {};
                     if (body.name) updates.name = body.name;
                     if (body.group !== undefined) updates.group = body.group;
+                    if (body.tags !== undefined) updates.tags = body.tags;
 
                     // Persist changes
                     await upsertDevice({ id, ...updates });
+
+                    // Audit log
+                    const userInfo = await getUserFromRequest(req);
+                    if (userInfo) {
+                        insertAuditLog(
+                            userInfo.userId,
+                            "device_update",
+                            userInfo.ipAddress,
+                            id,
+                            JSON.stringify(updates),
+                        );
+                    }
 
                     return new Response(
                         JSON.stringify({ ...device, ...updates }),
@@ -428,6 +601,19 @@ const server = serve<WebSocketData>({
                             },
                         );
                     }
+
+                    // Audit log before deletion
+                    const userInfo = await getUserFromRequest(req);
+                    if (userInfo) {
+                        insertAuditLog(
+                            userInfo.userId,
+                            "device_delete",
+                            userInfo.ipAddress,
+                            id,
+                            JSON.stringify({ name: existing.name }),
+                        );
+                    }
+
                     db.delete(devices).where(eq(devices.id, id)).run();
                     return new Response(JSON.stringify({ success: true }), {
                         headers: {
@@ -447,6 +633,195 @@ const server = serve<WebSocketData>({
                         },
                     );
                 }
+            }
+        }
+
+        // POST /api/devices/bulk/attributes - Bulk Update Attributes
+        if (
+            url.pathname === "/api/devices/bulk/attributes" &&
+            req.method === "POST"
+        ) {
+            try {
+                const userInfo = await getUserFromRequest(req);
+                if (!userInfo) {
+                    return new Response("Unauthorized", { status: 401 });
+                }
+
+                const body = (await req.json()) as {
+                    deviceIds: string[];
+                    group?: string;
+                    tags?: string[];
+                };
+
+                if (
+                    !body.deviceIds ||
+                    !Array.isArray(body.deviceIds) ||
+                    body.deviceIds.length === 0
+                ) {
+                    return new Response("Invalid deviceIds", { status: 400 });
+                }
+
+                const updates: Partial<Device> = { updatedAt: new Date() };
+                if (body.group !== undefined) updates.group = body.group;
+
+                if (body.tags && Array.isArray(body.tags) && body.tags.length > 0) {
+                    // We need to merge tags for each device individually since SQLite JSON operations
+                    // in Drizzle can be tricky for arrays in a simple update.
+                    const targetDevices = db.select({ id: devices.id, tags: devices.tags }).from(devices).where(inArray(devices.id, body.deviceIds)).all();
+                    for (const d of targetDevices) {
+                        const existingTags = Array.isArray(d.tags) ? d.tags : [];
+                        const mergedTags = Array.from(new Set([...existingTags, ...body.tags]));
+                        db.update(devices).set({ tags: mergedTags, updatedAt: new Date() }).where(eq(devices.id, d.id)).run();
+                    }
+                }
+
+                if (Object.keys(updates).length > 1) { // More than just updatedAt
+                    await db
+                        .update(devices)
+                        .set(updates)
+                        .where(inArray(devices.id, body.deviceIds))
+                        .run();
+                }
+
+                insertAuditLog(
+                    userInfo.userId,
+                    "bulk_update_attributes",
+                    userInfo.ipAddress,
+                    "bulk",
+                    JSON.stringify({
+                        count: body.deviceIds.length,
+                        updates,
+                        ids: body.deviceIds,
+                    }),
+                );
+
+                return new Response(JSON.stringify({ success: true }), {
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Access-Control-Allow-Origin": "*",
+                    },
+                });
+            } catch (e) {
+                console.error("Bulk attributes error:", e);
+                return new Response(
+                    JSON.stringify({ error: "Database error" }),
+                    {
+                        status: 500,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    },
+                );
+            }
+        }
+
+        // POST /api/devices/bulk/actions - Bulk Actions (Power/Command)
+        if (
+            url.pathname === "/api/devices/bulk/actions" &&
+            req.method === "POST"
+        ) {
+            try {
+                const userInfo = await getUserFromRequest(req);
+                if (!userInfo) {
+                    return new Response("Unauthorized", { status: 401 });
+                }
+
+                const body = (await req.json()) as {
+                    deviceIds: string[];
+                    action: "restart" | "shutdown" | "command";
+                    payload?: string;
+                };
+
+                if (
+                    !body.deviceIds ||
+                    !Array.isArray(body.deviceIds) ||
+                    body.deviceIds.length === 0
+                ) {
+                    return new Response("Invalid deviceIds", { status: 400 });
+                }
+
+                const results: {
+                    deviceId: string;
+                    status: "sent" | "offline" | "failed";
+                }[] = [];
+                let successCount = 0;
+
+                for (const deviceId of body.deviceIds) {
+                    const ws = deviceSockets.get(deviceId);
+                    if (ws) {
+                        try {
+                            if (body.action === "command") {
+                                ws.send(
+                                    JSON.stringify({
+                                        type: "input", // Sending as input for now, acting as a command injection
+                                        data: body.payload + "\r",
+                                    }),
+                                );
+                            } else if (body.action === "restart") {
+                                // Send specific restart command or script
+                                ws.send(
+                                    JSON.stringify({
+                                        type: "input",
+                                        data: "shutdown /r /t 0\r",
+                                    }),
+                                );
+                            } else if (body.action === "shutdown") {
+                                ws.send(
+                                    JSON.stringify({
+                                        type: "input",
+                                        data: "shutdown /s /t 0\r",
+                                    }),
+                                );
+                            }
+                            results.push({ deviceId, status: "sent" });
+                            successCount++;
+                        } catch (e) {
+                            results.push({ deviceId, status: "failed" });
+                        }
+                    } else {
+                        results.push({ deviceId, status: "offline" });
+                    }
+                }
+
+                insertAuditLog(
+                    userInfo.userId,
+                    "bulk_action",
+                    userInfo.ipAddress,
+                    "bulk",
+                    JSON.stringify({
+                        action: body.action,
+                        count: body.deviceIds.length,
+                        success: successCount,
+                        payload: body.payload,
+                    }),
+                );
+
+                return new Response(
+                    JSON.stringify({
+                        total: body.deviceIds.length,
+                        success: successCount,
+                        results,
+                    }),
+                    {
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    },
+                );
+            } catch (e) {
+                console.error("Bulk action error:", e);
+                return new Response(
+                    JSON.stringify({ error: "Server error" }),
+                    {
+                        status: 500,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    },
+                );
             }
         }
 
@@ -509,7 +884,10 @@ const server = serve<WebSocketData>({
                 };
 
                 // Sync with DB (will create if missing now)
-                await upsertDevice(updates);
+                await upsertDevice(updates, {
+                    ipAddress: ws.remoteAddress || "unknown",
+                    userId: userId,
+                });
 
                 // Get the final device state (either existing or newly created)
                 const finalDevice = db
@@ -611,6 +989,20 @@ const server = serve<WebSocketData>({
                                 deviceWs.send(JSON.stringify(welcomingMessage));
                             }
                         }
+                    }
+                    const { userId } = ws.data;
+                    if (
+                        userId
+                    ) {
+                        console.log("USER ID ===================", userId);
+                        const targetDeviceId = ws.data.deviceId;
+                        insertAuditLog(
+                            userId,
+                            msg.type,
+                            "unknown",
+                            targetDeviceId,
+                            JSON.stringify({ msg: JSON.stringify(msg) }),
+                        );
                     }
                 } else if (type === "device") {
                     console.log(

@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { formatRelativeTime } from "~/utils/formatters";
 import "@xterm/xterm/css/xterm.css";
+import { authClient } from "~/utils/auth-client";
 
 interface Device {
     id: string;
@@ -22,12 +23,15 @@ const fitAddon = ref<FitAddon | null>(null);
 const ws = ref<WebSocket | null>(null);
 const status = ref<"connecting" | "connected" | "disconnected" | "error">("disconnected");
 
+const { data: session } = await authClient.useSession(useFetch);
+
 function connect() {
     if (!props.device) return;
 
     status.value = "connecting";
     const clientId = `web-${Math.random().toString(36).substr(2, 9)}`;
-    ws.value = new WebSocket(`${useRuntimeConfig().public.websocket_url}/ws/?type=client&id=${clientId}`);
+    const userId = session.value?.user?.id || 'unknown';
+    ws.value = new WebSocket(`${useRuntimeConfig().public.websocket_url}/ws/?type=client&id=${clientId}&userId=${userId}`);
 
     ws.value.onopen = () => {
         status.value = "connected";

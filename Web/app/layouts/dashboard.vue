@@ -13,6 +13,11 @@ const items: NavigationMenuItem[] = [
         to: "/dashboard/devices",
     },
     {
+        label: "Audit Logs",
+        icon: "i-material-symbols-history",
+        to: "/dashboard/audit-logs",
+    },
+    {
         label: "Logout",
         icon: "i-material-symbols-admin",
         to: "/logout",

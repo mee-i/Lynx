@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import { card } from "#build/ui";
 import LineChart from "~/components/chart/LineChart.vue";
 import FileManager from "~/components/device/FileManager.vue";
+import { authClient } from "~/utils/auth-client";
 
 const route = useRoute();
 const deviceId = route.params.id as string;
@@ -43,6 +44,8 @@ const device = ref<Device | null>(null);
 const ws = ref<WebSocket | null>(null);
 const status = ref("disconnected");
 const logs = ref<DeviceLog[]>([]);
+
+const { data: session } = await authClient.useSession(useFetch);
 
 // Metrics
 interface MetricsPoint {
@@ -557,8 +560,9 @@ function clearTerminal() {
 function connect() {
     status.value = "connecting";
     const clientId = `web-${Math.random().toString(36).substr(2, 9)}`;
+    const userId = session.value?.user?.id || 'unknown';
     ws.value = new WebSocket(
-        `${useRuntimeConfig().public.websocket_url}/ws?type=client&id=${clientId}`,
+        `${useRuntimeConfig().public.websocket_url}/ws?type=client&id=${clientId}&userId=${userId}`,
     );
 
     ws.value.onopen = () => {

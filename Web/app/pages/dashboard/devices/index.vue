@@ -20,6 +20,7 @@ const devices = ref<Device[]>([]);
 const loading = ref(true);
 const search = ref("");
 const sortBy = ref<"status" | "name" | "lastSeen">("status");
+const selected = ref<Device[]>([]); // Multi-select state
 
 // Terminal modal state
 const terminalOpen = ref(false);
@@ -30,7 +31,26 @@ const editModalOpen = ref(false);
 const deleteModalOpen = ref(false);
 const deviceToEdit = ref<Device | null>(null);
 const deviceToDelete = ref<Device | null>(null);
-const editForm = reactive({ name: "", group: "" });
+const editForm = reactive({ name: "", group: "", tagsString: "" });
+
+// Bulk Action State
+const bulkAttributesModalOpen = ref(false);
+const bulkPowerModalOpen = ref(false);
+const bulkCommandModalOpen = ref(false);
+const bulkGroupForm = ref("");
+const bulkTagsFormString = ref("");
+const bulkPowerAction = ref<"restart" | "shutdown">("restart");
+const bulkCommandForm = ref("");
+const bulkProcessing = ref(false);
+
+interface BulkResult {
+    deviceId: string;
+    status: "sent" | "offline" | "failed";
+}
+const bulkResultsModalOpen = ref(false);
+const bulkResults = ref<BulkResult[]>([]);
+const bulkActionName = ref("");
+const getDeviceName = (id: string) => devices.value.find(d => d.id === id)?.name || id;
 
 const filteredDevices = computed(() => {
     let result = [...devices.value];
@@ -70,6 +90,7 @@ function openEditModal(device: Device) {
     deviceToEdit.value = device;
     editForm.name = device.name;
     editForm.group = device.group || "";
+    editForm.tagsString = (device.tags || []).join(", ");
     editModalOpen.value = true;
 }
 
@@ -81,9 +102,14 @@ function openDeleteModal(device: Device) {
 async function saveDevice() {
     if (!deviceToEdit.value) return;
     try {
+        const parsedTags = editForm.tagsString.split(',').map(t => t.trim()).filter(Boolean);
         const updated = await $fetch<Device>(`/lynx/api/devices/${deviceToEdit.value.id}`, {
             method: "POST",
-            body: { name: editForm.name, group: editForm.group || undefined },
+            body: { 
+                name: editForm.name, 
+                group: editForm.group || undefined,
+                tags: parsedTags 
+            },
         });
         // Update local list
         const index = devices.value.findIndex((d) => d.id === updated.id);
@@ -104,10 +130,106 @@ async function deleteDevice() {
         });
         devices.value = devices.value.filter((d) => d.id !== deviceToDelete.value?.id);
         deleteModalOpen.value = false;
+        // Also remove from selected if present
+        selected.value = selected.value.filter(d => d.id !== deviceToDelete.value?.id);
     } catch (e) {
         console.error("Failed to delete device:", e);
     }
 }
+
+// Bulk Actions Logic
+async function executeBulkAttributes() {
+    if (selected.value.length === 0) return;
+    bulkProcessing.value = true;
+    try {
+        const newTags = bulkTagsFormString.value.split(',').map(t => t.trim()).filter(Boolean);
+        await $fetch("/lynx/api/devices/bulk/attributes", {
+            method: "POST",
+            body: {
+                deviceIds: selected.value.map(d => d.id),
+                group: bulkGroupForm.value || undefined,
+                tags: newTags.length > 0 ? newTags : undefined
+            }
+        });
+        
+        // Optimistic update
+        const selectedIds = new Set(selected.value.map(d => d.id));
+        devices.value.forEach(d => {
+            if (selectedIds.has(d.id)) {
+                if (bulkGroupForm.value) d.group = bulkGroupForm.value;
+                if (newTags.length > 0) {
+                    d.tags = Array.from(new Set([...(d.tags || []), ...newTags]));
+                }
+            }
+        });
+        
+        selected.value = []; // Clear selection
+        bulkAttributesModalOpen.value = false;
+        useToast().add({ title: 'Bulk Update', description: 'Devices updated successfully', color: 'green' });
+    } catch (e) {
+        console.error("Bulk attributes error:", e);
+        useToast().add({ title: 'Error', description: 'Failed to update devices', color: 'red' });
+    } finally {
+        bulkProcessing.value = false;
+    }
+}
+
+async function executeBulkPower() {
+    if (selected.value.length === 0) return;
+    bulkProcessing.value = true;
+     try {
+        const res = await $fetch<{total: number, success: number, results: BulkResult[]}>("/lynx/api/devices/bulk/actions", {
+            method: "POST",
+            body: {
+                deviceIds: selected.value.map(d => d.id),
+                action: bulkPowerAction.value
+            }
+        });
+        
+        bulkPowerModalOpen.value = false;
+        selected.value = [];
+        
+        bulkActionName.value = bulkPowerAction.value;
+        bulkResults.value = res.results;
+        bulkResultsModalOpen.value = true;
+
+    } catch (e) {
+        console.error("Bulk power error:", e);
+        useToast().add({ title: 'Error', description: 'Failed to execute bulk action', color: 'red' });
+    } finally {
+        bulkProcessing.value = false;
+    }
+}
+
+async function executeBulkCommand() {
+    if (selected.value.length === 0 || !bulkCommandForm.value) return;
+    bulkProcessing.value = true;
+     try {
+        const res = await $fetch<{total: number, success: number, results: BulkResult[]}>("/lynx/api/devices/bulk/actions", {
+            method: "POST",
+            body: {
+                deviceIds: selected.value.map(d => d.id),
+                action: "command",
+                payload: bulkCommandForm.value
+            }
+        });
+        
+        bulkCommandModalOpen.value = false;
+        selected.value = [];
+        bulkCommandForm.value = "";
+        
+        bulkActionName.value = "command execution";
+        bulkResults.value = res.results;
+        bulkResultsModalOpen.value = true;
+
+    } catch (e) {
+        console.error("Bulk command error:", e);
+        useToast().add({ title: 'Error', description: 'Failed to send command', color: 'red' });
+    } finally {
+        bulkProcessing.value = false;
+    }
+}
+
 
 async function fetchDevices() {
     loading.value = true;
@@ -122,9 +244,10 @@ async function fetchDevices() {
 }
 
 const columns: TableColumn<Device>[] = [
+    { id: "select", checkbox: true }, // Add checkbox column
     { accessorKey: "status", header: "Status" },
     { accessorKey: "name", header: "Name" },
-    { accessorKey: "group", header: "Group" },
+    { accessorKey: "group", header: "Group & Tags" },
     { accessorKey: "os", header: "OS/Version" },
     { accessorKey: "lastSeen", header: "Last Seen" },
     { id: "actions", header: "" },
@@ -154,7 +277,7 @@ onMounted(() => {
             </div>
             
             <div class="flex gap-4 items-center">
-                <UInput
+                 <UInput
                     v-model="search"
                     icon="i-heroicons-magnifying-glass"
                     placeholder="Search devices..."
@@ -171,6 +294,60 @@ onMounted(() => {
                     class="w-48"
                 />
             </div>
+
+            <!-- Bulk Action Bar -->
+            <transition
+                enter-active-class="transition duration-200 ease-out"
+                enter-from-class="transform -translate-y-2 opacity-0"
+                enter-to-class="transform translate-y-0 opacity-100"
+                leave-active-class="transition duration-150 ease-in"
+                leave-from-class="transform translate-y-0 opacity-100"
+                leave-to-class="transform -translate-y-2 opacity-0"
+            >
+                <div v-if="selected.length > 0" class="bg-primary-900/20 border border-primary-500/30 rounded-lg p-3 flex items-center justify-between">
+                    <div class="flex items-center gap-2 text-primary-200 text-sm font-medium">
+                        <UIcon name="i-heroicons-check-circle" class="w-5 h-5 text-primary-400" />
+                        <span>{{ selected.length }} devices selected</span>
+                    </div>
+                    <div class="flex gap-2">
+                         <UButton
+                            size="xs"
+                            color="primary"
+                            variant="soft"
+                            icon="i-heroicons-tag"
+                            @click="bulkGroupForm = ''; bulkTagsFormString = ''; bulkAttributesModalOpen = true"
+                        >
+                            Set Attributes
+                        </UButton>
+                         <UButton
+                            size="xs"
+                            color="amber"
+                            variant="soft"
+                            icon="i-heroicons-command-line"
+                             @click="bulkCommandForm = ''; bulkCommandModalOpen = true"
+                        >
+                            Run Command
+                        </UButton>
+                        <UButton
+                            size="xs"
+                            color="error"
+                            variant="soft"
+                            icon="i-heroicons-power"
+                            @click="bulkPowerModalOpen = true"
+                        >
+                            Power Actions
+                        </UButton>
+                        <UButton
+                             size="xs"
+                             color="neutral"
+                             variant="ghost"
+                             icon="i-heroicons-x-mark"
+                             @click="selected = []"
+                             tooltip="Clear Selection"
+                        />
+                    </div>
+                </div>
+            </transition>
         </div>
 
         <UCard :ui="{ body: 'p-0' }">
@@ -186,6 +363,7 @@ onMounted(() => {
 
             <UTable
                 v-else
+                v-model="selected"
                 :data="filteredDevices"
                 :columns="columns"
                 :loading="loading"
@@ -210,10 +388,17 @@ onMounted(() => {
                 </template>
 
                 <template #group-cell="{ row }">
-                     <UBadge v-if="row.original.group" color="primary" variant="soft" size="xs">
-                        {{ row.original.group }}
-                     </UBadge>
-                     <span v-else class="text-gray-500 text-xs italic">None</span>
+                     <div class="flex flex-col gap-1 items-start">
+                         <UBadge v-if="row.original.group" color="primary" variant="soft" size="xs">
+                            {{ row.original.group }}
+                         </UBadge>
+                         <div v-if="row.original.tags?.length" class="flex gap-1 flex-wrap">
+                             <UBadge v-for="tag in row.original.tags" :key="tag" color="neutral" variant="subtle" size="xs">
+                                 {{ tag }}
+                             </UBadge>
+                         </div>
+                         <span v-if="!row.original.group && !row.original.tags?.length" class="text-gray-500 text-xs italic">Unassigned</span>
+                     </div>
                 </template>
 
                 <template #os-cell="{ row }">
@@ -238,7 +423,7 @@ onMounted(() => {
                             variant="soft"
                             icon="i-heroicons-command-line"
                             :disabled="row.original.status !== 'online'"
-                            @click="openTerminal(row.original)"
+                            @click.stop="openTerminal(row.original)"
                             tooltip="Terminal"
                         />
                          <UButton
@@ -246,7 +431,7 @@ onMounted(() => {
                             color="neutral"
                             variant="ghost"
                             icon="i-heroicons-pencil-square"
-                            @click="openEditModal(row.original)"
+                            @click.stop="openEditModal(row.original)"
                             tooltip="Edit"
                         />
                         <UButton
@@ -262,7 +447,7 @@ onMounted(() => {
                             color="error"
                             variant="ghost"
                             icon="i-heroicons-trash"
-                            @click="openDeleteModal(row.original)"
+                            @click.stop="openDeleteModal(row.original)"
                             tooltip="Delete"
                         />
                     </div>
@@ -283,6 +468,9 @@ onMounted(() => {
                     </UFormField>
                     <UFormField label="Group (e.g. Office, Lab)">
                         <UInput v-model="editForm.group" placeholder="Enter group name" />
+                    </UFormField>
+                    <UFormField label="Tags (comma separated)">
+                        <UInput v-model="editForm.tagsString" placeholder="e.g. web, database, prod" />
                     </UFormField>
                 </div>
             </template>
@@ -308,5 +496,109 @@ onMounted(() => {
                 </div>
             </template>
         </UModal>
+
+        <!-- Bulk Attributes Modal -->
+        <UModal v-model:open="bulkAttributesModalOpen">
+            <template #title>Bulk Set Attributes</template>
+            <template #body>
+                 <p class="mb-4 text-sm text-gray-400">Update attributes for {{ selected.length }} devices. Leave blank to keep existing values.</p>
+                 <div class="flex flex-col gap-4">
+                     <UFormField label="Set Group">
+                        <UInput v-model="bulkGroupForm" placeholder="e.g. Production" />
+                    </UFormField>
+                    <UFormField label="Merge Tags (comma separated)">
+                        <UInput v-model="bulkTagsFormString" placeholder="e.g. web, critical" />
+                    </UFormField>
+                 </div>
+            </template>
+            <template #footer>
+                <div class="flex justify-end gap-2">
+                     <UButton color="neutral" variant="ghost" @click="bulkAttributesModalOpen = false">Cancel</UButton>
+                     <UButton color="primary" :loading="bulkProcessing" @click="executeBulkAttributes">Apply</UButton>
+                </div>
+            </template>
+        </UModal>
+
+        <!-- Bulk Power Modal -->
+        <UModal v-model:open="bulkPowerModalOpen">
+             <template #title>Bulk Power Actions</template>
+             <template #body>
+                <div class="flex flex-col gap-4">
+                     <p class="text-sm text-gray-400">Perform power actions on {{ selected.length }} devices.</p>
+                     
+                     <div class="flex gap-4">
+                         <URadioGroup
+                            v-model="bulkPowerAction"
+                            :items="[{ value: 'restart', label: 'Restart' }, { value: 'shutdown', label: 'Shutdown' }]"
+                         />
+                     </div>
+
+                     <div class="bg-red-500/10 border border-red-500/30 p-3 rounded text-sm text-red-200">
+                         <p class="font-bold mb-1">Warning</p>
+                         This will immediately attempt to {{ bulkPowerAction }} all selected online devices. This action cannot be stopped once sent.
+                     </div>
+                </div>
+             </template>
+             <template #footer>
+                <div class="flex justify-end gap-2">
+                     <UButton color="neutral" variant="ghost" @click="bulkPowerModalOpen = false">Cancel</UButton>
+                     <UButton color="error" :loading="bulkProcessing" @click="executeBulkPower">Confirm {{ bulkPowerAction }}</UButton>
+                </div>
+            </template>
+        </UModal>
+
+         <!-- Bulk Command Modal -->
+        <UModal v-model:open="bulkCommandModalOpen">
+             <template #title>Run Bulk Command</template>
+             <template #body>
+                <div class="flex flex-col gap-4">
+                     <p class="text-sm text-gray-400">Send a command to {{ selected.length }} devices.</p>
+                     <div class="bg-amber-500/10 border border-amber-500/30 p-2 rounded text-xs text-amber-200">
+                        Commands are executed in the background. Check Audit Logs for details.
+                     </div>
+                     <UTextarea
+                        v-model="bulkCommandForm"
+                        placeholder="e.g. ipconfig /flushdns"
+                        :rows="4"
+                        autoresize
+                     />
+                </div>
+             </template>
+             <template #footer>
+                <div class="flex justify-end gap-2">
+                     <UButton color="neutral" variant="ghost" @click="bulkCommandModalOpen = false">Cancel</UButton>
+                     <UButton color="primary" :loading="bulkProcessing" @click="executeBulkCommand">Send Command</UButton>
+                </div>
+            </template>
+        </UModal>
+
+        <!-- Bulk Results Modal -->
+        <UModal v-model:open="bulkResultsModalOpen">
+             <template #title>Bulk Action Results</template>
+             <template #body>
+                <div class="flex flex-col gap-4">
+                     <h3 class="font-medium text-sm">Action: <span class="capitalize">{{ bulkActionName }}</span></h3>
+                     <div class="max-h-64 overflow-y-auto w-full text-sm">
+                         <div v-for="res in bulkResults" :key="res.deviceId" class="flex justify-between items-center py-2 border-b border-gray-800 last:border-0">
+                            <span class="truncate pr-4 flex-1">{{ getDeviceName(res.deviceId) }} <span class="text-xs text-neutral-500">({{res.deviceId}})</span></span>
+                            <UBadge 
+                                :color="res.status === 'sent' ? 'success' : res.status === 'offline' ? 'neutral' : 'error'" 
+                                variant="soft"
+                                size="xs"
+                                class="capitalize"
+                            >
+                                {{ res.status }}
+                            </UBadge>
+                         </div>
+                     </div>
+                </div>
+             </template>
+             <template #footer>
+                <div class="flex justify-end">
+                     <UButton color="primary" @click="bulkResultsModalOpen = false">Close</UButton>
+                </div>
+            </template>
+        </UModal>
+
     </div>
 </template>
