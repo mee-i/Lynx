@@ -20,6 +20,11 @@ const subscriptions = new Map<string, Set<ServerWebSocket<WebSocketData>>>();
 interface MediaStream {
     videoClients: Set<ReadableStreamDefaultController>;
     audioClients: Set<ReadableStreamDefaultController>;
+    videoBytesReceived: number;
+    audioBytesReceived: number;
+    videoBitrate: number; // bytes per second
+    audioBitrate: number; // bytes per second
+    lastUpdate: number;
 }
 const activeStreams = new Map<string, MediaStream>();
 
@@ -28,10 +33,30 @@ function getOrCreateStream(deviceId: string): MediaStream {
         activeStreams.set(deviceId, {
             videoClients: new Set(),
             audioClients: new Set(),
+            videoBytesReceived: 0,
+            audioBytesReceived: 0,
+            videoBitrate: 0,
+            audioBitrate: 0,
+            lastUpdate: Date.now(),
         });
     }
     return activeStreams.get(deviceId)!;
 }
+
+// Periodic bitrate calculation (runs every 2 seconds)
+setInterval(() => {
+    const now = Date.now();
+    for (const [deviceId, stream] of activeStreams) {
+        const deltaSec = (now - stream.lastUpdate) / 1000;
+        if (deltaSec > 0) {
+            stream.videoBitrate = Math.round(stream.videoBytesReceived / deltaSec);
+            stream.audioBitrate = Math.round(stream.audioBytesReceived / deltaSec);
+            stream.videoBytesReceived = 0;
+            stream.audioBytesReceived = 0;
+            stream.lastUpdate = now;
+        }
+    }
+}, 2000);
 
 // In-memory cache for device registry (synced with DB)
 export const deviceRegistry = new Map<string, Device>();
@@ -332,6 +357,7 @@ const server = serve<WebSocketData>({
                 if (action === "frame_up" && req.method === "POST") {
                     const frame = new Uint8Array(await req.arrayBuffer());
                     const stream = getOrCreateStream(deviceId);
+                    stream.videoBytesReceived += frame.length;
 
                     const boundary = `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`;
                     const encoder = new TextEncoder();
@@ -354,6 +380,7 @@ const server = serve<WebSocketData>({
                 if (action === "audio_up" && req.method === "POST") {
                     const audioData = new Uint8Array(await req.arrayBuffer());
                     const stream = getOrCreateStream(deviceId);
+                    stream.audioBytesReceived += audioData.length;
 
                     stream.audioClients.forEach(controller => {
                         try {
@@ -767,11 +794,17 @@ const server = serve<WebSocketData>({
 
                             const subs = subscriptions.get(id);
                             if (subs) {
+                                const stream = activeStreams.get(id);
+                                const enrichedData = {
+                                    ...msg.data,
+                                    videoBitrate: stream?.videoBitrate || 0,
+                                    audioBitrate: stream?.audioBitrate || 0,
+                                };
                                 subs.forEach((client) =>
                                     client.send(
                                         JSON.stringify({
                                             type: "metrics",
-                                            data: msg.data,
+                                            data: enrichedData,
                                             deviceId: id,
                                         }),
                                     ),

@@ -642,6 +642,10 @@ function connect() {
                     color: "success",
                 });
             } else if (msg.type === "metrics") {
+                streamBitrates.value = {
+                    video: msg.data.videoBitrate || 0,
+                    audio: msg.data.audioBitrate || 0
+                };
                 const point: MetricsPoint = {
                     cpu: msg.data.cpu,
                     ram: msg.data.ram,
@@ -854,7 +858,25 @@ const selectedMic = ref<string>("");
 const activeLiveVideo = ref<"screen" | "cam" | null>(null);
 const isMicOn = ref(false);
 const audioCtx = ref<AudioContext | null>(null);
+const gainNode = ref<GainNode | null>(null);
+const volume = ref(Number(typeof window !== 'undefined' ? localStorage.getItem('stream_volume') || '1' : '1'));
 let audioAbortController: AbortController | null = null;
+
+watch(volume, (val) => {
+    localStorage.setItem('stream_volume', val.toString());
+    if (gainNode.value) {
+        gainNode.value.gain.setTargetAtTime(val, audioCtx.value?.currentTime || 0, 0.1);
+    }
+});
+
+const streamBitrates = ref({ video: 0, audio: 0 });
+
+function formatSpeed(bytesPerSec: number) {
+    if (bytesPerSec === 0) return '0 B/s';
+    if (bytesPerSec < 1024) return `${bytesPerSec} B/s`;
+    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+}
 
 const streamRetryKey = ref(0);
 const videoStreamUrl = computed(() => {
@@ -942,7 +964,15 @@ async function startAudioPlayback() {
 
             const source = ctx.createBufferSource();
             source.buffer = audioBuffer;
-            source.connect(ctx.destination);
+            
+            // Create gain node if not exists
+            if (!gainNode.value) {
+                gainNode.value = ctx.createGain();
+                gainNode.value.gain.value = volume.value;
+                gainNode.value.connect(ctx.destination);
+            }
+            
+            source.connect(gainNode.value);
 
             const now = ctx.currentTime;
             if (nextStartTime < now) nextStartTime = now;
@@ -962,6 +992,7 @@ function stopAudioPlayback() {
     if (audioCtx.value) {
         audioCtx.value.close();
         audioCtx.value = null;
+        gainNode.value = null;
     }
 }
 
@@ -1671,22 +1702,28 @@ onBeforeUnmount(() => {
                                         >Camera</UButton>
                                     </div>
                                 </div>
-                                <div class="flex items-center gap-2">
-                                    <USelectMenu
-                                        v-if="availableMics.length"
-                                        v-model="selectedMic"
-                                        :items="availableMics"
-                                        size="xs"
-                                        class="w-32 mr-2"
-                                        :disabled="isMicOn"
-                                    />
-                                    <UButton
-                                        :color="isMicOn ? 'error' : 'neutral'"
-                                        :variant="isMicOn ? 'soft' : 'ghost'"
-                                        size="xs"
-                                        :icon="isMicOn ? 'i-heroicons-microphone' : 'i-heroicons-microphone-slash'"
-                                        @click="toggleMic"
-                                    >{{ isMicOn ? 'Stop Mic' : 'Start Mic' }}</UButton>
+                                <div class="flex items-center gap-4">
+                                    <div v-if="isMicOn" class="flex items-center gap-2 w-32 group/vol">
+                                        <UIcon name="i-heroicons-speaker-wave" class="w-4 h-4 text-gray-500" />
+                                        <USlider v-model="volume" :min="0" :max="10" :step="0.01" size="xs" color="primary" />
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <USelectMenu
+                                            v-if="availableMics.length"
+                                            v-model="selectedMic"
+                                            :items="availableMics"
+                                            size="xs"
+                                            class="w-32 mr-2"
+                                            :disabled="isMicOn"
+                                        />
+                                        <UButton
+                                            :color="isMicOn ? 'error' : 'neutral'"
+                                            :variant="isMicOn ? 'soft' : 'ghost'"
+                                            size="xs"
+                                            :icon="isMicOn ? 'i-heroicons-microphone' : 'i-heroicons-microphone-slash'"
+                                            @click="toggleMic"
+                                        >{{ isMicOn ? 'Stop Mic' : 'Start Mic' }}</UButton>
+                                    </div>
                                 </div>
                             </div>
                         </template>
@@ -1703,6 +1740,16 @@ onBeforeUnmount(() => {
                                 alt="Live Stream"
                                 @error="refreshStream"
                             />
+                            <div class="absolute bottom-2 right-2 flex flex-col items-end gap-1 pointer-events-none">
+                                <div v-if="activeLiveVideo" class="px-2 py-0.5 bg-black/60 rounded text-[10px] font-mono text-white flex items-center gap-2">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse"></span>
+                                    LIVE VIDEO: {{ formatSpeed(streamBitrates.video) }}
+                                </div>
+                                <div v-if="isMicOn" class="px-2 py-0.5 bg-black/60 rounded text-[10px] font-mono text-white flex items-center gap-2">
+                                    <UIcon name="i-heroicons-microphone" class="w-2.5 h-2.5 text-blue-400" />
+                                    LIVE AUDIO: {{ formatSpeed(streamBitrates.audio) }}
+                                </div>
+                            </div>
                             <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
                                 <UButton
                                     icon="i-heroicons-arrow-path"
