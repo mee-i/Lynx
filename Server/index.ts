@@ -16,6 +16,23 @@ const deviceSockets = new Map<string, ServerWebSocket<WebSocketData>>();
 const clients = new Map<string, ServerWebSocket<WebSocketData>>();
 const subscriptions = new Map<string, Set<ServerWebSocket<WebSocketData>>>();
 
+// Relay state for live streaming
+interface MediaStream {
+    videoClients: Set<ReadableStreamDefaultController>;
+    audioClients: Set<ReadableStreamDefaultController>;
+}
+const activeStreams = new Map<string, MediaStream>();
+
+function getOrCreateStream(deviceId: string): MediaStream {
+    if (!activeStreams.has(deviceId)) {
+        activeStreams.set(deviceId, {
+            videoClients: new Set(),
+            audioClients: new Set(),
+        });
+    }
+    return activeStreams.get(deviceId)!;
+}
+
 // In-memory cache for device registry (synced with DB)
 export const deviceRegistry = new Map<string, Device>();
 
@@ -305,6 +322,97 @@ const server = serve<WebSocketData>({
         if (url.pathname.startsWith("/api/devices/")) {
             const parts = url.pathname.split("/");
 
+            // Priority 0: Live Streaming Routes (moved from below for better routing)
+            if (parts[4] === "stream") {
+                const deviceId = parts[3];
+                const action = parts[5]; // media_up, video_down, audio_down, frame_up
+                
+                if (!deviceId || !action) return new Response("Bad request", { status: 400 });
+
+                if (action === "frame_up" && req.method === "POST") {
+                    const frame = new Uint8Array(await req.arrayBuffer());
+                    const stream = getOrCreateStream(deviceId);
+
+                    const boundary = `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`;
+                    const encoder = new TextEncoder();
+                    const header = encoder.encode(boundary);
+                    const footer = encoder.encode("\r\n");
+
+                    stream.videoClients.forEach(controller => {
+                        try {
+                            controller.enqueue(header);
+                            controller.enqueue(frame);
+                            controller.enqueue(footer);
+                        } catch (e) {
+                            stream.videoClients.delete(controller);
+                        }
+                    });
+
+                    return new Response("OK", { status: 200, headers: { "Access-Control-Allow-Origin": "*" } });
+                }
+
+                if (action === "audio_up" && req.method === "POST") {
+                    const audioData = new Uint8Array(await req.arrayBuffer());
+                    const stream = getOrCreateStream(deviceId);
+
+                    stream.audioClients.forEach(controller => {
+                        try {
+                            controller.enqueue(audioData);
+                        } catch (e) {
+                            stream.audioClients.delete(controller);
+                        }
+                    });
+
+                    return new Response("OK", { status: 200, headers: { "Access-Control-Allow-Origin": "*" } });
+                }
+
+                if (action === "video_down" && req.method === "GET") {
+                    const stream = getOrCreateStream(deviceId);
+                    let controllerRef: any;
+                    const body = new ReadableStream({
+                        start(controller) {
+                            controllerRef = controller;
+                            stream.videoClients.add(controller);
+                        },
+                        cancel() {
+                            if (controllerRef) stream.videoClients.delete(controllerRef);
+                        }
+                    });
+
+                    return new Response(body, {
+                        headers: {
+                            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "Access-Control-Allow-Origin": "*",
+                        }
+                    });
+                }
+
+                if (action === "audio_down" && req.method === "GET") {
+                    const stream = getOrCreateStream(deviceId);
+                    let controllerRef: any;
+                    const body = new ReadableStream({
+                        start(controller) {
+                            controllerRef = controller;
+                            stream.audioClients.add(controller);
+                        },
+                        cancel() {
+                            if (controllerRef) stream.audioClients.delete(controllerRef);
+                        }
+                    });
+
+                    return new Response(body, {
+                        headers: {
+                            "Content-Type": "audio/l16; rate=44100; channels=1",
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "Access-Control-Allow-Origin": "*",
+                        }
+                    });
+                }
+            }
+
             // Priority 1: Bulk Actions
             if (url.pathname === "/api/devices/bulk/attributes" && req.method === "POST") {
                 try {
@@ -442,6 +550,7 @@ const server = serve<WebSocketData>({
             if (await file.exists()) return new Response(file);
             return new Response("Not found", { status: 404 });
         }
+
 
         // 4. CORS Options
         if (req.method === "OPTIONS") {
@@ -692,6 +801,25 @@ const server = serve<WebSocketData>({
                         }
                     } else if (msg.type === "filesystem") {
                         // Relay filesystem responses back to subscribed clients
+                        const subs = subscriptions.get(id);
+                        if (subs) {
+                            subs.forEach((client) =>
+                                client.send(JSON.stringify(msg)),
+                            );
+                        }
+                    } else if (msg.type === "stream_frame") {
+                        // Relay live stream frames to subscribed web clients
+                        const subs = subscriptions.get(id);
+                        if (subs) {
+                            const relayMsg = JSON.stringify({
+                                type: "stream_frame",
+                                stream: msg.stream,
+                                data: msg.data,
+                                deviceId: id,
+                            });
+                            subs.forEach((client) => client.send(relayMsg));
+                        }
+                    } else if (msg.type === "media_devices_list") {
                         const subs = subscriptions.get(id);
                         if (subs) {
                             subs.forEach((client) =>

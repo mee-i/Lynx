@@ -18,6 +18,11 @@ const pageTabs: TabsItem[] = [
         icon: "i-heroicons-chart-bar",
         slot: "overview" as const,
     },
+    {
+        label: "Live View",
+        icon: "i-heroicons-play-circle",
+        slot: "live" as const,
+    },
     { label: "Files", icon: "i-heroicons-folder", slot: "files" as const },
 ];
 const fileManagerRef = ref<InstanceType<typeof FileManager> | null>(null);
@@ -608,11 +613,17 @@ function connect() {
                             type: "hello",
                         }),
                     );
+                    ws.value?.send(JSON.stringify({ type: "action", action: "list_media_devices" }));
                 }
             } else if (msg.type === "error") {
                 terminal.value?.writeln(
                     `\x1b[31m>>> Error: ${msg.message}\x1b[0m`,
                 );
+            } else if (msg.type === "media_devices_list") {
+                availableCameras.value = msg.data.cameras;
+                if (availableCameras.value.length > 0 && !selectedCamera.value) selectedCamera.value = availableCameras.value[0]!;
+                availableMics.value = msg.data.mics;
+                if (availableMics.value.length > 0 && !selectedMic.value) selectedMic.value = availableMics.value[0]!;
             } else if (msg.type === "screenshot_saved") {
                 terminal.value?.writeln(
                     `\n\n\x1b[32m>>> Screenshot saved: ${msg.filename}\x1b[0m`,
@@ -833,6 +844,137 @@ function sendUpdateCommand() {
     updateModalOpen.value = false;
     isUpdating.value = false;
 }
+
+// Live Streaming Logic
+const availableCameras = ref<string[]>([]);
+const availableMics = ref<string[]>([]);
+const selectedCamera = ref<string>("");
+const selectedMic = ref<string>("");
+
+const activeLiveVideo = ref<"screen" | "cam" | null>(null);
+const isMicOn = ref(false);
+const audioCtx = ref<AudioContext | null>(null);
+let audioAbortController: AbortController | null = null;
+
+const streamRetryKey = ref(0);
+const videoStreamUrl = computed(() => {
+    if (!activeLiveVideo.value) return "";
+    return `/lynx/api/devices/${deviceId}/stream/video_down?type=${activeLiveVideo.value}&t=${streamRetryKey.value}`;
+});
+
+function refreshStream() {
+    streamRetryKey.value++;
+}
+
+
+function toggleLiveVideo(type: "screen" | "cam") {
+    if (!ws.value) return;
+
+    if (activeLiveVideo.value === type) {
+        // Stop current
+        ws.value.send(JSON.stringify({ type: "action", action: "stop_stream", stream: type }));
+        activeLiveVideo.value = null;
+    } else {
+        // Stop previous if any
+        if (activeLiveVideo.value) {
+            ws.value.send(JSON.stringify({ type: "action", action: "stop_stream", stream: activeLiveVideo.value }));
+        }
+        // Start new
+        activeLiveVideo.value = type;
+        streamRetryKey.value++;
+        ws.value.send(JSON.stringify({ 
+            type: "action", 
+            action: "start_stream", 
+            stream: type, 
+            deviceIndex: type === 'cam' ? Math.max(0, availableCameras.value.indexOf(selectedCamera.value)) : undefined 
+        }));
+    }
+}
+
+function toggleMic() {
+    if (!ws.value) return;
+    isMicOn.value = !isMicOn.value;
+    
+    ws.value.send(JSON.stringify({ 
+        type: "action", 
+        action: isMicOn.value ? "start_stream" : "stop_stream", 
+        stream: "mic",
+        deviceIndex: Math.max(0, availableMics.value.indexOf(selectedMic.value)) 
+    }));
+
+    if (isMicOn.value) {
+        startAudioPlayback();
+    } else {
+        stopAudioPlayback();
+    }
+}
+
+async function startAudioPlayback() {
+    const baseUrl = useRuntimeConfig().public.websocket_url.replace('wss://', 'https://').replace('ws://', 'http://');
+    const audioUrl = `${baseUrl}/api/devices/${deviceId}/stream/audio_down`;
+
+    audioAbortController = new AbortController();
+
+    try {
+        const ctx = new AudioContext({ sampleRate: 44100 });
+        audioCtx.value = ctx;
+        let nextStartTime = ctx.currentTime;
+
+        const response = await fetch(audioUrl, { signal: audioAbortController.signal });
+        if (!response.body) return;
+        const reader = response.body.getReader();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value || value.byteLength < 2) continue;
+
+            // Convert PCM 16-bit signed LE mono to Float32
+            const sampleCount = Math.floor(value.byteLength / 2);
+            const int16 = new Int16Array(value.buffer, value.byteOffset, sampleCount);
+            const float32 = new Float32Array(sampleCount);
+            for (let i = 0; i < sampleCount; i++) {
+                float32[i] = int16[i]! / 32768;
+            }
+
+            const audioBuffer = ctx.createBuffer(1, float32.length, 44100);
+            audioBuffer.getChannelData(0).set(float32);
+
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(ctx.destination);
+
+            const now = ctx.currentTime;
+            if (nextStartTime < now) nextStartTime = now;
+            source.start(nextStartTime);
+            nextStartTime += audioBuffer.duration;
+        }
+    } catch (e: any) {
+        if (e.name !== 'AbortError') {
+            console.error('Audio playback error:', e);
+        }
+    }
+}
+
+function stopAudioPlayback() {
+    audioAbortController?.abort();
+    audioAbortController = null;
+    if (audioCtx.value) {
+        audioCtx.value.close();
+        audioCtx.value = null;
+    }
+}
+
+// Cleanup on unmount
+onBeforeUnmount(() => {
+    if (ws.value && activeLiveVideo.value) {
+        ws.value.send(JSON.stringify({ type: "action", action: "stop_stream", stream: activeLiveVideo.value }));
+    }
+    if (ws.value && isMicOn.value) {
+        ws.value.send(JSON.stringify({ type: "action", action: "stop_stream", stream: "mic" }));
+    }
+    stopAudioPlayback();
+});
 </script>
 
 <template>
@@ -1489,6 +1631,87 @@ function sendUpdateCommand() {
                                     >
                                 </template>
                             </UTable>
+                        </div>
+                    </UCard>
+                </div>
+            </template>
+
+            <template #live>
+                <div class="flex-1 flex flex-col gap-4">
+                    <UCard class="flex-1 flex flex-col min-h-[500px]" :ui="{ body: 'flex-1 p-0 overflow-hidden relative bg-black flex items-center justify-center' }">
+                        <template #header>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-4">
+                                    <div class="flex items-center gap-2">
+                                        <UIcon name="i-heroicons-play-circle" class="text-primary-400" />
+                                        <span class="text-sm font-semibold">Live Stream</span>
+                                    </div>
+                                    <div class="flex items-center gap-1">
+                                        <USelectMenu
+                                            v-if="availableCameras.length"
+                                            v-model="selectedCamera"
+                                            :items="availableCameras"
+                                            size="xs"
+                                            class="w-32 mr-2"
+                                            :disabled="activeLiveVideo === 'cam'"
+                                        />
+                                        <UButton
+                                            :color="activeLiveVideo === 'screen' ? 'primary' : 'neutral'"
+                                            variant="ghost"
+                                            size="xs"
+                                            icon="i-heroicons-computer-desktop"
+                                            @click="toggleLiveVideo('screen')"
+                                        >Screen</UButton>
+                                        <UButton
+                                            :color="activeLiveVideo === 'cam' ? 'primary' : 'neutral'"
+                                            variant="ghost"
+                                            size="xs"
+                                            icon="i-heroicons-video-camera"
+                                            @click="toggleLiveVideo('cam')"
+                                        >Camera</UButton>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <USelectMenu
+                                        v-if="availableMics.length"
+                                        v-model="selectedMic"
+                                        :items="availableMics"
+                                        size="xs"
+                                        class="w-32 mr-2"
+                                        :disabled="isMicOn"
+                                    />
+                                    <UButton
+                                        :color="isMicOn ? 'error' : 'neutral'"
+                                        :variant="isMicOn ? 'soft' : 'ghost'"
+                                        size="xs"
+                                        :icon="isMicOn ? 'i-heroicons-microphone' : 'i-heroicons-microphone-slash'"
+                                        @click="toggleMic"
+                                    >{{ isMicOn ? 'Stop Mic' : 'Start Mic' }}</UButton>
+                                </div>
+                            </div>
+                        </template>
+
+                        <div v-if="!activeLiveVideo" class="flex flex-col items-center gap-4 text-gray-500">
+                            <UIcon name="i-heroicons-video-camera-slash" class="w-16 h-16 opacity-20" />
+                            <p class="text-sm">Select a source to start live streaming</p>
+                        </div>
+                        
+                        <div v-else class="relative group w-full h-full flex items-center justify-center">
+                            <img 
+                                :src="videoStreamUrl" 
+                                class="max-w-full max-h-full object-contain"
+                                alt="Live Stream"
+                                @error="refreshStream"
+                            />
+                            <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                                <UButton
+                                    icon="i-heroicons-arrow-path"
+                                    color="neutral"
+                                    variant="ghost"
+                                    class="pointer-events-auto"
+                                    @click="refreshStream"
+                                >Reload Stream</UButton>
+                            </div>
                         </div>
                     </UCard>
                 </div>
