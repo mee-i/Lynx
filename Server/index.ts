@@ -743,6 +743,37 @@ const server = serve<WebSocketData>({
                         );
                     }
                 } else if (type === "device") {
+                    // Check if message is binary (media frame)
+                    if (typeof message !== "string") {
+                        const buffer = message as Uint8Array;
+                        if (buffer.length > 0) {
+                            const mediaTypeByte = buffer[0];
+                            const mediaData = buffer.slice(1);
+                            const stream = getOrCreateStream(id);
+                            
+                            let streamName = "";
+                            if (mediaTypeByte === 0x01) {
+                                streamName = "screen";
+                                stream.videoBytesReceived += mediaData.length;
+                            } else if (mediaTypeByte === 0x02) {
+                                streamName = "cam";
+                                stream.videoBytesReceived += mediaData.length;
+                            } else if (mediaTypeByte === 0x03) {
+                                streamName = "mic";
+                                stream.audioBytesReceived += mediaData.length;
+                            }
+
+                            if (streamName) {
+                                const subs = subscriptions.get(id);
+                                if (subs) {
+                                    // Forward binary packet to clients [TypeByte][Data...]
+                                    subs.forEach((client) => client.send(buffer));
+                                }
+                            }
+                            return;
+                        }
+                    }
+
                     console.log(
                         `[Device Msg] From ${id}: ${JSON.stringify(msg).substring(0, 100)}...`,
                     );
