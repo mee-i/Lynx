@@ -597,7 +597,7 @@ const server = serve<WebSocketData>({
                     userId: url.searchParams.get("userId") || undefined,
                 },
             });
-            if (success) return undefined;
+if (success) return undefined;
         }
 
         return new Response("Not found", { status: 404 });
@@ -610,10 +610,9 @@ const server = serve<WebSocketData>({
             if (type === "device") {
                 deviceSockets.set(id, ws);
 
-                // Auto-register occurs inside upsertDevice if missing
                 const updates = {
-                    id, // pass ID for lookup/insert
-                    userId, // manual linking if provided
+                    id,
+                    userId,
                     name: name || id,
                     status: "online" as const,
                     lastSeen: new Date(),
@@ -621,60 +620,59 @@ const server = serve<WebSocketData>({
                     version: version || null,
                 };
 
-                // Sync with DB (will create if missing now)
                 await upsertDevice(updates, {
                     ipAddress: ws.remoteAddress || "unknown",
                     userId: userId,
                 });
 
-                // Get the final device state (either existing or newly created)
-                const finalDevice = db
-                    .select()
-                    .from(devices)
-                    .where(eq(devices.id, id))
-                    .get();
+                const finalDevice = db.select().from(devices).where(eq(devices.id, id)).get();
                 if (!finalDevice) {
-                    console.warn(
-                        `[device] Failed to register/find device: ${id}`,
-                    );
                     ws.close(1008, "Registration failed");
                     return;
                 }
 
-                // Sync with in-memory registry
-                const wasOffline =
-                    !deviceRegistry.get(id) ||
-                    deviceRegistry.get(id)?.status === "offline";
+                const wasOffline = !deviceRegistry.get(id) || deviceRegistry.get(id)?.status === "offline";
                 deviceRegistry.set(id, { ...finalDevice, status: "online" });
-
-                // Log event
                 await logDeviceEvent(id, wasOffline ? "connect" : "reconnect");
 
                 const subs = subscriptions.get(id);
                 if (subs) {
                     subs.forEach((client) =>
-                        client.send(
-                            JSON.stringify({
-                                type: "status",
-                                status: "online",
-                                deviceId: id,
-                            }),
-                        ),
+                        client.send(JSON.stringify({ type: "status", status: "online", deviceId: id }))
                     );
                 }
             } else {
                 clients.set(id, ws);
             }
         },
+
         async message(ws, message) {
             const { type, id } = ws.data;
 
-            console.log(`[${type}] received message: ${message}`);
+            // 1. Binary Media Handling (Device -> Clients)
+            if (typeof message !== "string") {
+                const buffer = message as Uint8Array;
+                if (buffer.length > 0 && type === "device") {
+                    const mediaTypeByte = buffer[0];
+                    const stream = getOrCreateStream(id);
+                    
+                    if (mediaTypeByte === 0x01 || mediaTypeByte === 0x02) {
+                        stream.videoBytesReceived += buffer.length - 1;
+                    } else if (mediaTypeByte === 0x03) {
+                        stream.audioBytesReceived += buffer.length - 1;
+                    }
 
+                    const subs = subscriptions.get(id);
+                    if (subs) {
+                        subs.forEach((client) => client.send(buffer));
+                    }
+                    return;
+                }
+            }
+
+            // 2. JSON Message Handling
             try {
-                const msg = JSON.parse(
-                    typeof message === "string" ? message : message.toString(),
-                );
+                const msg = JSON.parse(typeof message === "string" ? message : message.toString());
 
                 if (type === "client") {
                     if (msg.type === "subscribe") {
@@ -684,254 +682,82 @@ const server = serve<WebSocketData>({
                         }
                         subscriptions.get(targetDeviceId)?.add(ws);
                         ws.data.deviceId = targetDeviceId;
-                        console.log(
-                            `Client ${id} subscribed to ${targetDeviceId}`,
-                        );
 
-                        // Send current device status
                         const isOnline = deviceSockets.has(targetDeviceId);
-                        ws.send(
-                            JSON.stringify({
-                                type: "status",
-                                status: isOnline ? "online" : "offline",
-                                deviceId: targetDeviceId,
-                            }),
-                        );
+                        ws.send(JSON.stringify({ type: "status", status: isOnline ? "online" : "offline", deviceId: targetDeviceId }));
 
                         if (isOnline) {
-                            console.log("Sending test command to device");
-                            const deviceWs = deviceSockets.get(targetDeviceId);
-                            if (deviceWs) {
-                                deviceWs.send(JSON.stringify(welcomingMessage));
-                            }
+                            deviceSockets.get(targetDeviceId)?.send(JSON.stringify({ type: "action", action: "list_media_devices" }));
                         }
-                    } else if (
-                        msg.type === "input" ||
-                        msg.type === "resize" ||
-                        msg.type === "action" ||
-                        msg.type === "command" ||
-                        msg.type === "filesystem"
-                    ) {
+                    } else if (["action", "command", "input", "resize"].includes(msg.type)) {
                         const targetDeviceId = ws.data.deviceId;
                         if (targetDeviceId) {
-                            const deviceWs = deviceSockets.get(targetDeviceId);
-                            if (deviceWs) {
-                                deviceWs.send(JSON.stringify(msg));
-                            }
-                        }
-                    } else if (msg.type === "hello") {
-                        const targetDeviceId = ws.data.deviceId;
-                        if (targetDeviceId) {
-                            const deviceWs = deviceSockets.get(targetDeviceId);
-                            if (deviceWs) {
-                                deviceWs.send(JSON.stringify(welcomingMessage));
-                            }
+                            deviceSockets.get(targetDeviceId)?.send(JSON.stringify(msg));
                         }
                     }
-                    const { userId } = ws.data;
-                    if (
-                        userId
-                    ) {
-                        console.log("USER ID ===================", userId);
-                        const targetDeviceId = ws.data.deviceId;
-                        insertAuditLog(
-                            userId,
-                            msg.type,
-                            "unknown",
-                            targetDeviceId,
-                            JSON.stringify({ msg: JSON.stringify(msg) }),
-                        );
+
+                    if (ws.data.userId) {
+                        insertAuditLog(ws.data.userId, msg.type, "unknown", ws.data.deviceId, JSON.stringify({ msg: JSON.stringify(msg) }));
                     }
                 } else if (type === "device") {
-                    // Check if message is binary (media frame)
-                    if (typeof message !== "string") {
-                        const buffer = message as Uint8Array;
-                        if (buffer.length > 0) {
-                            const mediaTypeByte = buffer[0];
-                            const mediaData = buffer.slice(1);
-                            const stream = getOrCreateStream(id);
-                            
-                            let streamName = "";
-                            if (mediaTypeByte === 0x01) {
-                                streamName = "screen";
-                                stream.videoBytesReceived += mediaData.length;
-                            } else if (mediaTypeByte === 0x02) {
-                                streamName = "cam";
-                                stream.videoBytesReceived += mediaData.length;
-                            } else if (mediaTypeByte === 0x03) {
-                                streamName = "mic";
-                                stream.audioBytesReceived += mediaData.length;
-                            }
-
-                            if (streamName) {
-                                const subs = subscriptions.get(id);
-                                if (subs) {
-                                    // Forward binary packet to clients [TypeByte][Data...]
-                                    subs.forEach((client) => client.send(buffer));
-                                }
-                            }
-                            return;
-                        }
-                    }
-
-                    console.log(
-                        `[Device Msg] From ${id}: ${JSON.stringify(msg).substring(0, 100)}...`,
-                    );
-
                     if (msg.type === "output") {
-                        const subs = subscriptions.get(id);
-                        if (subs) {
-                            subs.forEach((client) =>
-                                client.send(
-                                    JSON.stringify({
-                                        type: "output",
-                                        output: msg.output,
-                                    }),
-                                ),
-                            );
-                        }
+                        subscriptions.get(id)?.forEach(c => c.send(JSON.stringify({ type: "output", output: msg.output })));
                     } else if (msg.type === "ping") {
                         ws.send(JSON.stringify({ type: "pong" }));
-                        const now = new Date();
                         const device = deviceRegistry.get(id);
                         if (device) {
-                            device.lastSeen = now;
-                            const updates: any = { id, lastSeen: now };
-                            if (msg.uptime) {
-                                device.uptime = msg.uptime;
-                                updates.uptime = msg.uptime;
-                            }
-                            upsertDevice(updates);
+                            device.lastSeen = new Date();
+                            if (msg.uptime) device.uptime = msg.uptime;
+                            upsertDevice({ id, lastSeen: device.lastSeen, uptime: device.uptime });
                         }
-                    } else if (msg.type === "metrics") {
-                        if (msg.data) {
-                            try {
-                                db.insert(deviceMetrics)
-                                    .values({
-                                        deviceId: id,
-                                        cpuUsage: Math.round(msg.data.cpu),
-                                        ramUsage: Math.round(msg.data.ram),
-                                        diskUsage: Math.round(msg.data.disk),
-                                        networkUp: Math.round(msg.data.netUp),
-                                        networkDown: Math.round(
-                                            msg.data.netDown,
-                                        ),
-                                        timestamp: new Date(),
-                                    })
-                                    .run();
-                            } catch (e) {
-                                console.error("Failed to save metrics:", e);
-                            }
+                    } else if (msg.type === "metrics" && msg.data) {
+                        try {
+                            db.insert(deviceMetrics).values({
+                                deviceId: id,
+                                cpuUsage: Math.round(msg.data.cpu),
+                                ramUsage: Math.round(msg.data.ram),
+                                diskUsage: Math.round(msg.data.disk),
+                                networkUp: Math.round(msg.data.netUp),
+                                networkDown: Math.round(msg.data.netDown),
+                                timestamp: new Date(),
+                            }).run();
+                        } catch (e) {}
 
-                            const subs = subscriptions.get(id);
-                            if (subs) {
-                                const stream = activeStreams.get(id);
-                                const enrichedData = {
-                                    ...msg.data,
-                                    videoBitrate: stream?.videoBitrate || 0,
-                                    audioBitrate: stream?.audioBitrate || 0,
-                                };
-                                subs.forEach((client) =>
-                                    client.send(
-                                        JSON.stringify({
-                                            type: "metrics",
-                                            data: enrichedData,
-                                            deviceId: id,
-                                        }),
-                                    ),
-                                );
-                            }
-                        }
+                        const stream = activeStreams.get(id);
+                        const data = { ...msg.data, videoBitrate: stream?.videoBitrate || 0, audioBitrate: stream?.audioBitrate || 0 };
+                        subscriptions.get(id)?.forEach(c => c.send(JSON.stringify({ type: "metrics", data, deviceId: id })));
                     } else if (msg.type === "screenshot" && msg.data) {
                         const buffer = Buffer.from(msg.data, "base64");
                         const timestamp = Date.now();
-                        const dir = `images/${id}`;
-                        await Bun.write(`${dir}/${timestamp}.png`, buffer);
-                        console.log(
-                            `[Screenshot] Saved ${dir}/${timestamp}.png`,
-                        );
-
-                        const subs = subscriptions.get(id);
-                        if (subs) {
-                            subs.forEach((client) =>
-                                client.send(
-                                    JSON.stringify({
-                                        type: "screenshot_saved",
-                                        url: `/images/${id}/${timestamp}.png`,
-                                        filename: `${timestamp}.png`,
-                                    }),
-                                ),
-                            );
-                        }
-                    } else if (msg.type === "filesystem") {
-                        // Relay filesystem responses back to subscribed clients
-                        const subs = subscriptions.get(id);
-                        if (subs) {
-                            subs.forEach((client) =>
-                                client.send(JSON.stringify(msg)),
-                            );
-                        }
-                    } else if (msg.type === "stream_frame") {
-                        // Relay live stream frames to subscribed web clients
-                        const subs = subscriptions.get(id);
-                        if (subs) {
-                            const relayMsg = JSON.stringify({
-                                type: "stream_frame",
-                                stream: msg.stream,
-                                data: msg.data,
-                                deviceId: id,
-                            });
-                            subs.forEach((client) => client.send(relayMsg));
-                        }
-                    } else if (msg.type === "media_devices_list") {
-                        const subs = subscriptions.get(id);
-                        if (subs) {
-                            subs.forEach((client) =>
-                                client.send(JSON.stringify(msg)),
-                            );
-                        }
+                        await Bun.write(`images/${id}/${timestamp}.png`, buffer);
+                        subscriptions.get(id)?.forEach(c => c.send(JSON.stringify({ 
+                            type: "screenshot_saved", 
+                            url: `/images/${id}/${timestamp}.png`, 
+                            filename: `${timestamp}.png` 
+                        })));
+                    } else if (["filesystem", "media_devices_list", "screenshot_saved"].includes(msg.type)) {
+                        subscriptions.get(id)?.forEach(c => c.send(JSON.stringify(msg)));
                     }
                 }
-            } catch (err) {
-                console.error("Failed to parse message", err);
+            } catch (e) {
+                console.error("WS processing error:", e);
             }
         },
+
         async close(ws) {
             const { type, id } = ws.data;
             console.log(`[${type}] disconnected: ${id}`);
 
             if (type === "device") {
                 deviceSockets.delete(id);
-
-                const now = new Date();
-                const device = deviceRegistry.get(id);
-                if (device) {
-                    device.status = "offline";
-                    device.lastSeen = now;
-                    upsertDevice({ id, status: "offline", lastSeen: now });
-                }
-
-                // Log event
-                await logDeviceEvent(id, "disconnect");
-
-                const subs = subscriptions.get(id);
-                if (subs) {
-                    subs.forEach((client) =>
-                        client.send(
-                            JSON.stringify({
-                                type: "status",
-                                status: "offline",
-                                deviceId: id,
-                            }),
-                        ),
-                    );
-                }
-            } else {
-                clients.delete(id);
-                subscriptions.forEach((set) => set.delete(ws));
+                upsertDevice({ id, status: "offline", lastSeen: new Date() });
+                subscriptions.get(id)?.forEach(c => c.send(JSON.stringify({ type: "status", status: "offline", deviceId: id })));
+            } else if (type === "client") {
+                const targetDeviceId = ws.data.deviceId;
+                if (targetDeviceId) subscriptions.get(targetDeviceId)?.delete(ws);
             }
         },
     },
 });
 
-console.log(`🚀 Lynx Server listening on localhost:${server.port}`);
+console.log(`🚀 Relay server running on ${server.hostname}:${server.port}`);
