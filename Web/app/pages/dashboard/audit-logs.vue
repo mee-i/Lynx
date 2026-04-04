@@ -8,7 +8,7 @@ definePageMeta({
 });
 
 const { data: session } = await authClient.useSession(useFetch);
-const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin');
+const isAdmin = computed(() => (session.value?.user as any)?.role === "admin");
 
 interface AuditLog {
     id: number;
@@ -70,9 +70,10 @@ function exportCsv() {
     const query = new URLSearchParams();
     if (filters.userId) query.append("userId", filters.userId);
     if (filters.action) query.append("action", filters.action);
-    if (filters.startDate) query.append("startDate", filters.startDate.toISOString());
+    if (filters.startDate)
+        query.append("startDate", filters.startDate.toISOString());
     if (filters.endDate) query.append("endDate", filters.endDate.toISOString());
-    
+
     window.open(`/api/audit-logs/export?${query.toString()}`, "_blank");
 }
 
@@ -149,7 +150,7 @@ function formatPayload(payload?: string) {
                     >
                         Refresh
                     </UButton>
-                     <UButton
+                    <UButton
                         variant="solid"
                         color="neutral"
                         icon="i-heroicons-arrow-down-tray"
@@ -179,26 +180,60 @@ function formatPayload(payload?: string) {
                         />
                     </UFormField>
                     <UFormField label="Time Range">
-                         <div class="flex gap-2">
-                             <!-- Simple workaround for date range, using two date pickers would be better but keeping it simple for now or usage of a specific component if available -->
-                             <!-- Using raw input type date for compatibility -->
-                             <input 
-                                type="date" 
+                        <div class="flex gap-2">
+                            <!-- Simple workaround for date range, using two date pickers would be better but keeping it simple for now or usage of a specific component if available -->
+                            <!-- Using raw input type date for compatibility -->
+                            <input
+                                type="date"
                                 class="bg-neutral-900 border border-neutral-800 rounded px-2 py-1 text-sm text-gray-300 w-full"
-                                :value="filters.startDate && filters.startDate.toISOString().split('T')[0]"
-                                @input="(e: any) => filters.startDate = e.target.value ? new Date(e.target.value) : undefined"
+                                :value="
+                                    filters.startDate &&
+                                    filters.startDate
+                                        .toISOString()
+                                        .split('T')[0]
+                                "
+                                @input="
+                                    (e: any) =>
+                                        (filters.startDate = e.target.value
+                                            ? new Date(e.target.value)
+                                            : undefined)
+                                "
                             />
-                             <input 
-                                type="date" 
+                            <input
+                                type="date"
                                 class="bg-neutral-900 border border-neutral-800 rounded px-2 py-1 text-sm text-gray-300 w-full"
-                                :value="filters.endDate && filters.endDate.toISOString().split('T')[0]"
-                                @input="(e: any) => filters.endDate = e.target.value ? new Date(e.target.value) : undefined"
+                                :value="
+                                    filters.endDate &&
+                                    filters.endDate.toISOString().split('T')[0]
+                                "
+                                @input="
+                                    (e: any) =>
+                                        (filters.endDate = e.target.value
+                                            ? new Date(e.target.value)
+                                            : undefined)
+                                "
                             />
-                         </div>
+                        </div>
                     </UFormField>
                     <div class="flex gap-2">
-                        <UButton color="primary" block @click="() => { page = 1; fetchLogs(); }">Apply</UButton>
-                        <UButton color="neutral" variant="ghost" block @click="resetFilters">Reset</UButton>
+                        <UButton
+                            color="primary"
+                            block
+                            @click="
+                                () => {
+                                    page = 1;
+                                    fetchLogs();
+                                }
+                            "
+                            >Apply</UButton
+                        >
+                        <UButton
+                            color="neutral"
+                            variant="ghost"
+                            block
+                            @click="resetFilters"
+                            >Reset</UButton
+                        >
                     </div>
                 </div>
             </UCard>
@@ -213,24 +248,31 @@ function formatPayload(payload?: string) {
             >
                 <template #userName-cell="{ row }">
                     <div class="flex flex-col">
-                        <span class="font-medium text-white">{{ row.original.userName || 'Unknown' }}</span>
-                        <code class="text-xs text-gray-500">{{ row.original.userId }}</code>
+                        <span class="font-medium text-white">{{
+                            row.original.userName || "Unknown"
+                        }}</span>
+                        <code class="text-xs text-gray-500">{{
+                            row.original.userId
+                        }}</code>
                     </div>
                 </template>
 
-                 <template #action-cell="{ row }">
+                <template #action-cell="{ row }">
                     <UBadge variant="subtle" color="primary" class="capitalize">
                         {{ row.original.action.replace(/_/g, " ") }}
                     </UBadge>
                 </template>
 
                 <template #payload-cell="{ row }">
-                    <span class="text-xs text-gray-400 font-mono truncate max-w-xs block" :title="row.original.payload">
+                    <span
+                        class="text-xs text-gray-400 font-mono truncate max-w-xs block"
+                        :title="row.original.payload"
+                    >
                         {{ formatPayload(row.original.payload) }}
                     </span>
                 </template>
-                
-                 <template #ipAddress-cell="{ row }">
+
+                <template #ipAddress-cell="{ row }">
                     <span class="text-xs text-gray-500 font-mono">
                         {{ row.original.ipAddress }}
                     </span>
@@ -244,9 +286,13 @@ function formatPayload(payload?: string) {
             </UTable>
 
             <!-- Pagination -->
-            <div class="p-4 border-t border-neutral-800 flex justify-between items-center" v-if="total > 0">
+            <div
+                class="p-4 border-t border-neutral-800 flex justify-between items-center"
+                v-if="total > 0"
+            >
                 <span class="text-sm text-gray-500">
-                    Showing {{ (page - 1) * limit + 1 }} to {{ Math.min(page * limit, total) }} of {{ total }} entries
+                    Showing {{ (page - 1) * limit + 1 }} to
+                    {{ Math.min(page * limit, total) }} of {{ total }} entries
                 </span>
                 <UPagination
                     v-model:page="page"
@@ -256,28 +302,40 @@ function formatPayload(payload?: string) {
                 />
             </div>
         </UCard>
-        
+
         <!-- Clear Logs Confirmation Modal -->
-        <UModal v-model="isClearModalOpen">
-            <UCard>
-                <template #header>
-                    <div class="flex items-center justify-between">
-                        <h3 class="text-base font-semibold leading-6 text-white">
-                            Clear Audit Logs
-                        </h3>
-                        <UButton color="neutral" variant="ghost" icon="i-heroicons-x-mark-20-solid" class="-my-1" @click="isClearModalOpen = false" />
-                    </div>
-                </template>
-                <div class="text-sm text-gray-400">
-                    Are you sure you want to clear <strong>ALL</strong> audit logs? This action cannot be undone.
+        <UModal
+            v-model:open="isClearModalOpen"
+        >
+            <template #header>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-base font-semibold leading-6 text-white">
+                        Clear Audit Logs
+                    </h3>
                 </div>
-                <template #footer>
-                   <div class="flex justify-end gap-2">
-                        <UButton color="neutral" variant="ghost" @click="isClearModalOpen = false">Cancel</UButton>
-                        <UButton color="error" :loading="clearing" @click="clearLogs">Clear All</UButton>
-                   </div>
-                </template>
-            </UCard>
+            </template>
+            <template #body>
+                <div class="text-sm text-gray-400">
+                    Are you sure you want to clear <strong>ALL</strong> audit
+                    logs? This action cannot be undone.
+                </div>
+            </template>
+            <template #footer>
+                <div class="flex justify-end gap-2">
+                    <UButton
+                        color="neutral"
+                        variant="ghost"
+                        @click="isClearModalOpen = false"
+                        >Cancel</UButton
+                    >
+                    <UButton
+                        color="error"
+                        :loading="clearing"
+                        @click="clearLogs"
+                        >Clear All</UButton
+                    >
+                </div>
+            </template>
         </UModal>
     </div>
 </template>

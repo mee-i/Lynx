@@ -290,6 +290,8 @@ const data = MetricsPayload.parse(raw) // throws ZodError on bad input
 - **Nuxt UI first** — `UButton`, `UCard`, `UTable`, `UModal`, `UBadge`, etc. Never raw `<button>` or `<div>` where a Nuxt UI component exists.
 - **Tailwind only** — no inline styles, no `<style>` blocks unless unavoidable.
 - **No hardcoded colors** — always use semantic tokens.
+- **No purple and blue color** - use color reference from other pages
+- **No gradient colors** - use solid colors
 
 ### Semantic Color Tokens
 | Token | Use |
@@ -407,3 +409,9 @@ cd Web && bun run dev     # Nuxt dashboard
 | Terminal | Frontend | `TerminalModal.vue` |
 | File manager | Frontend | `FileManager.vue` |
 | Agent TLS / secret | Security | `Main.cpp` + Windows DPAPI |
+
+## Component Example
+Slider
+```vue
+<USlider v-model="volume" :min="0" :max="10" :step="0.01" size="xs" color="primary" />
+```

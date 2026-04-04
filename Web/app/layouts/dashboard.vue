@@ -13,6 +13,11 @@ const items: NavigationMenuItem[] = [
         to: "/dashboard/devices",
     },
     {
+        label: "CCTV View",
+        icon: "i-material-symbols-video-camera-back-rounded",
+        to: "/dashboard/cctv",
+    },
+    {
         label: "Audit Logs",
         icon: "i-material-symbols-history",
         to: "/dashboard/audit-logs",

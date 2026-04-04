@@ -54,7 +54,7 @@ export default defineEventHandler(async (event) => {
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     // Get total count
-    const countResult = db
+    const countResult = await db
         .select({ count: sql<number>`count(*)` })
         .from(auditLog)
         .where(whereClause)
@@ -62,7 +62,7 @@ export default defineEventHandler(async (event) => {
     const total = countResult?.count || 0;
 
     // Get logs with user name joined
-    const logs = db
+    const logs = await db
         .select({
             id: auditLog.id,
             userId: auditLog.userId,
@@ -82,11 +82,12 @@ export default defineEventHandler(async (event) => {
         .all();
 
     // Get distinct actions for filter dropdown
-    const actions = db
+    const actionsQuery = await db
         .selectDistinct({ action: auditLog.action })
         .from(auditLog)
-        .all()
-        .map((a) => a.action);
+        .all();
+    
+    const actions = actionsQuery.map((a) => a.action);
 
     return {
         data: logs,

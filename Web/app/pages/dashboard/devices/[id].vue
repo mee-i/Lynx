@@ -863,7 +863,9 @@ const volume = ref(Number(typeof window !== 'undefined' ? localStorage.getItem('
 let audioAbortController: AbortController | null = null;
 
 watch(volume, (val) => {
-    localStorage.setItem('stream_volume', val.toString());
+    if (typeof window !== 'undefined') {
+        localStorage.setItem('stream_volume', val.toString());
+    }
     if (gainNode.value) {
         gainNode.value.gain.setTargetAtTime(val, audioCtx.value?.currentTime || 0, 0.1);
     }
@@ -888,28 +890,36 @@ function refreshStream() {
     streamRetryKey.value++;
 }
 
-
-function toggleLiveVideo(type: "screen" | "cam") {
+function toggleLiveVideo(sourceType: "screen" | "cam") {
     if (!ws.value) return;
 
-    if (activeLiveVideo.value === type) {
+    if (activeLiveVideo.value === sourceType) {
         // Stop current
-        ws.value.send(JSON.stringify({ type: "action", action: "stop_stream", stream: type }));
+        ws.value.send(JSON.stringify({ type: "action", action: "stop_stream", stream: sourceType }));
         activeLiveVideo.value = null;
     } else {
-        // Stop previous if any
-        if (activeLiveVideo.value) {
-            ws.value.send(JSON.stringify({ type: "action", action: "stop_stream", stream: activeLiveVideo.value }));
+        const prevType = activeLiveVideo.value;
+        activeLiveVideo.value = null; // Force unmount/stop to clear browser cache
+        
+        if (prevType && ws.value) {
+            ws.value.send(JSON.stringify({ type: "action", action: "stop_stream", stream: prevType }));
         }
-        // Start new
-        activeLiveVideo.value = type;
-        streamRetryKey.value++;
-        ws.value.send(JSON.stringify({ 
-            type: "action", 
-            action: "start_stream", 
-            stream: type, 
-            deviceIndex: type === 'cam' ? Math.max(0, availableCameras.value.indexOf(selectedCamera.value)) : undefined 
-        }));
+
+        nextTick(() => {
+            activeLiveVideo.value = sourceType;
+            streamRetryKey.value++;
+            
+            // Small delay to allow previous stream to close on the agent side
+            setTimeout(() => {
+                if (activeLiveVideo.value !== sourceType) return;
+                ws.value?.send(JSON.stringify({ 
+                    type: "action", 
+                    action: "start_stream", 
+                    stream: sourceType, 
+                    deviceIndex: sourceType === 'cam' ? Math.max(0, availableCameras.value.indexOf(selectedCamera.value)) : undefined 
+                }));
+            }, 400);
+        });
     }
 }
 
@@ -1720,7 +1730,7 @@ onBeforeUnmount(() => {
                                             :color="isMicOn ? 'error' : 'neutral'"
                                             :variant="isMicOn ? 'soft' : 'ghost'"
                                             size="xs"
-                                            :icon="isMicOn ? 'i-heroicons-microphone' : 'i-heroicons-microphone-slash'"
+                                            :icon="isMicOn ? 'i-material-symbols-mic' : 'i-material-symbols-mic-off'"
                                             @click="toggleMic"
                                         >{{ isMicOn ? 'Stop Mic' : 'Start Mic' }}</UButton>
                                     </div>
@@ -1735,6 +1745,7 @@ onBeforeUnmount(() => {
                         
                         <div v-else class="relative group w-full h-full flex items-center justify-center">
                             <img 
+                                :key="`${activeLiveVideo}-${streamRetryKey}`"
                                 :src="videoStreamUrl" 
                                 class="max-w-full max-h-full object-contain"
                                 alt="Live Stream"
