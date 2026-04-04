@@ -16,11 +16,17 @@ const audioCtx = ref<AudioContext | null>(null);
 const gainNode = ref<GainNode | null>(null);
 const volume = ref(Number(typeof window !== 'undefined' ? localStorage.getItem('stream_volume') || '1' : '1'));
 const streamBitrates = ref({ video: 0, audio: 0 });
+const selectedMic = ref<string>("");
 const streamRetryKey = ref(0);
 const availableCameras = ref<string[]>([]);
 const availableMics = ref<string[]>([]);
 const selectedCamera = ref<string>("");
-const selectedMic = ref<string>("");
+
+const displayedFrame = ref<string>("");
+
+onBeforeUnmount(() => {
+    if (displayedFrame.value) URL.revokeObjectURL(displayedFrame.value);
+});
 
 const cardRef = ref<HTMLElement | null>(null);
 const isExpanded = ref(false);
@@ -48,6 +54,7 @@ function connect() {
     ws.value = new WebSocket(
         `${runtimeConfig.public.websocket_url}/ws?type=client&id=${clientId}`,
     );
+    ws.value.binaryType = 'arraybuffer';
 
     ws.value.onopen = () => {
         status.value = "connected";
@@ -55,6 +62,22 @@ function connect() {
     };
 
     ws.value.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+            const buffer = event.data;
+            if (buffer.byteLength < 1) return;
+            const typeByte = new Uint8Array(buffer, 0, 1)[0];
+            const mediaData = buffer.slice(1);
+
+            if (typeByte === 0x01 || typeByte === 0x02) {
+                if (displayedFrame.value) URL.revokeObjectURL(displayedFrame.value);
+                const blob = new Blob([mediaData], { type: 'image/jpeg' });
+                displayedFrame.value = URL.createObjectURL(blob);
+            } else if (typeByte === 0x03) {
+                handleIncomingAudio(mediaData);
+            }
+            return;
+        }
+
         try {
             const msg = JSON.parse(event.data);
             if (msg.type === "status") {
@@ -171,66 +194,54 @@ function toggleMic() {
 }
 
 async function startAudioPlayback() {
-    const baseUrl = runtimeConfig.public.websocket_url.replace('wss://', 'https://').replace('ws://', 'http://');
-    const audioUrl = `${baseUrl}/api/devices/${props.deviceId}/stream/audio_down`;
-
-    audioAbortController = new AbortController();
-
-    try {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 44100 });
-        audioCtx.value = ctx;
-        let nextStartTime = ctx.currentTime;
-
-        const response = await fetch(audioUrl, { signal: audioAbortController.signal });
-        if (!response.body) return;
-        const reader = response.body.getReader();
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (!value || value.byteLength < 2) continue;
-
-            const sampleCount = Math.floor(value.byteLength / 2);
-            const int16 = new Int16Array(value.buffer, value.byteOffset, sampleCount);
-            const float32 = new Float32Array(sampleCount);
-            for (let i = 0; i < sampleCount; i++) {
-                float32[i] = int16[i]! / 32768;
-            }
-
-            const audioBuffer = ctx.createBuffer(1, float32.length, 44100);
-            audioBuffer.getChannelData(0).set(float32);
-
-            const source = ctx.createBufferSource();
-            source.buffer = audioBuffer;
-            
-            if (!gainNode.value) {
-                gainNode.value = ctx.createGain();
-                gainNode.value.gain.value = volume.value;
-                gainNode.value.connect(ctx.destination);
-            }
-            
-            source.connect(gainNode.value);
-
-            const now = ctx.currentTime;
-            if (nextStartTime < now) nextStartTime = now;
-            source.start(nextStartTime);
-            nextStartTime += audioBuffer.duration;
-        }
-    } catch (e: any) {
-        if (e.name !== 'AbortError') {
-            console.error('Audio playback error:', e);
-        }
+    if (!audioCtx.value || audioCtx.value.state === 'closed') {
+        audioCtx.value = new AudioContext({ sampleRate: 44100 });
     }
+    if (audioCtx.value.state === 'suspended') {
+        await audioCtx.value.resume();
+    }
+    
+    if (!gainNode.value) {
+        gainNode.value = audioCtx.value.createGain();
+        gainNode.value.gain.value = volume.value;
+        gainNode.value.connect(audioCtx.value.destination);
+    }
+    lastAudioScheduleTime = 0;
+}
+
+let lastAudioScheduleTime = 0;
+const AUDIO_BUFFER_DELAY = 0.15; // 150ms buffer
+
+function handleIncomingAudio(value: ArrayBuffer) {
+    if (!isMicOn.value || !audioCtx.value || audioCtx.value.state === 'suspended') return;
+
+    const int16 = new Int16Array(value);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i]! / 32768;
+    }
+
+    const audioBuffer = audioCtx.value.createBuffer(1, float32.length, 44100);
+    audioBuffer.getChannelData(0).set(float32);
+
+    const source = audioCtx.value.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(gainNode.value!);
+
+    const now = audioCtx.value.currentTime;
+    if (lastAudioScheduleTime < now) {
+        lastAudioScheduleTime = now + AUDIO_BUFFER_DELAY;
+    }
+    
+    source.start(lastAudioScheduleTime);
+    lastAudioScheduleTime += audioBuffer.duration;
 }
 
 function stopAudioPlayback() {
-    audioAbortController?.abort();
-    audioAbortController = null;
     if (audioCtx.value) {
-        audioCtx.value.close();
-        audioCtx.value = null;
-        gainNode.value = null;
+        audioCtx.value.suspend();
     }
+    lastAudioScheduleTime = 0;
 }
 
 watch(volume, (val) => {
@@ -288,10 +299,9 @@ onBeforeUnmount(() => {
         <div class="flex-1 flex items-center justify-center relative overflow-hidden h-full min-h-[140px]">
             <img 
                 v-if="activeLiveVideo" 
-                :key="`${activeLiveVideo}-${streamRetryKey}`"
-                :src="videoStreamUrl" 
+                :key="`${activeLiveVideo}-frame`"
+                :src="displayedFrame" 
                 class="w-full h-full object-contain"
-                @error="streamRetryKey++" 
             />
             <div v-else class="flex flex-col items-center gap-2 text-neutral-700">
                 <UIcon name="i-heroicons-video-camera-slash" class="w-10 h-10" />
@@ -375,8 +385,8 @@ onBeforeUnmount(() => {
                 <div class="flex-1 bg-neutral-950 flex items-center justify-center relative overflow-hidden rounded-xl border border-neutral-800">
                     <img 
                         v-if="activeLiveVideo" 
-                        :key="`expanded-${activeLiveVideo}-${streamRetryKey}`"
-                        :src="videoStreamUrl" 
+                        :key="`expanded-${activeLiveVideo}-frame`"
+                        :src="displayedFrame" 
                         class="w-full h-full object-contain"
                     />
                     <div v-else class="flex flex-col items-center gap-4 text-neutral-800">

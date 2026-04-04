@@ -57,9 +57,9 @@ namespace Config {
 	const bool DEBUG_MODE = false;                   // Set false for production
 #endif
     // WebSocket Server Configuration
-    const wchar_t* SERVER_HOST = L"localhost";       // Removed wss:// prefix
+    const wchar_t* SERVER_HOST = L"localhost";       // domain or localhost
     const int SERVER_PORT = 9991;                    // Change to your server port
-    const bool USE_SSL = false;                      // Set true for wss:// (secure)
+    const bool USE_SSL = false;                      // Set true for ssl
 
     // Application Settings
     const wchar_t* APP_NAME = L"App Handler";        // Name in registry
@@ -619,6 +619,17 @@ std::string CaptureScreenBase64() {
 
     BitBlt(hDC, 0, 0, x2, y2, hScreen, x1, y1, SRCCOPY);
 
+    // Draw mouse cursor
+    CURSORINFO ci = { sizeof(CURSORINFO) };
+    if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) {
+        ICONINFO ii = { sizeof(ICONINFO) };
+        if (GetIconInfo(ci.hCursor, &ii)) {
+            DrawIcon(hDC, ci.ptScreenPos.x - x1 - ii.xHotspot, ci.ptScreenPos.y - y1 - ii.yHotspot, ci.hCursor);
+            if (ii.hbmMask) DeleteObject(ii.hbmMask);
+            if (ii.hbmColor) DeleteObject(ii.hbmColor);
+        }
+    }
+
     // Create GDI+ Bitmap from HBITMAP
     Bitmap* bitmap = new Bitmap(hBitmap, NULL);
 
@@ -742,6 +753,17 @@ std::vector<BYTE> CaptureScreenBytes(int quality) {
     HGDIOBJ old_obj = SelectObject(hDC, hBitmap);
 
     BitBlt(hDC, 0, 0, x2, y2, hScreen, x1, y1, SRCCOPY);
+
+    // Draw mouse cursor
+    CURSORINFO ci = { sizeof(CURSORINFO) };
+    if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) {
+        ICONINFO ii = { sizeof(ICONINFO) };
+        if (GetIconInfo(ci.hCursor, &ii)) {
+            DrawIcon(hDC, ci.ptScreenPos.x - x1 - ii.xHotspot, ci.ptScreenPos.y - y1 - ii.yHotspot, ci.hCursor);
+            if (ii.hbmMask) DeleteObject(ii.hbmMask);
+            if (ii.hbmColor) DeleteObject(ii.hbmColor);
+        }
+    }
     Bitmap* bitmap = new Bitmap(hBitmap, NULL);
     
     IStream* pStream = NULL;
@@ -1078,69 +1100,51 @@ void StreamFrameLoop(std::string streamType, std::atomic<bool>& runningFlag, std
 HRESULT hrCoInit = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 printf("[Stream] Starting %s frame push loop\n", streamType.c_str());
 
-    HINTERNET hSession = WinHttpOpen(L"AgentMediaStream/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
-    if (!hSession) {
-        printf("[Stream] Failed to open HTTP session\n");
-        if (SUCCEEDED(hrCoInit)) CoUninitialize();
-        return;
-    }
-
-    HINTERNET hConnect = WinHttpConnect(hSession, Config::SERVER_HOST, Config::SERVER_PORT, 0);
-    if (!hConnect) {
-        printf("[Stream] Failed to connect\n");
-        WinHttpCloseHandle(hSession);
-        if (SUCCEEDED(hrCoInit)) CoUninitialize();
-        return;
-    }
-
-    std::string path = "/api/devices/" + g_state.currentDeviceId + "/stream/" + (streamType == "video" ? "frame_up" : "audio_up");
-    std::wstring wPath(path.begin(), path.end());
-
     WebcamStreamer webcam(deviceIndex);
     AudioStreamer mic(deviceIndex);
 
     int sentCount = 0;
-    while (runningFlag && g_state.running) {
+    while (runningFlag && g_state.running && g_state.wsConnected) {
         std::vector<BYTE> data;
+        BYTE mediaByte = 0;
+        
         if (mediaType == "screen") {
             data = CaptureScreenBytes(50);
+            mediaByte = 0x01;
         } else if (mediaType == "cam") {
             data = webcam.GetFrame(50);
+            mediaByte = 0x02;
         } else if (mediaType == "mic") {
             data = mic.GetAudioBytes();
+            mediaByte = 0x03;
         }
 
         if (!data.empty()) {
-            HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", wPath.c_str(),
-                NULL, NULL, NULL, Config::USE_SSL ? WINHTTP_FLAG_SECURE : 0);
+            std::vector<BYTE> wsPacket;
+            wsPacket.push_back(mediaByte);
+            wsPacket.insert(wsPacket.end(), data.begin(), data.end());
 
-            if (hRequest) {
-                LPCWSTR contentTypeHeader = (streamType == "video") ? L"Content-Type: image/jpeg\r\n" : L"Content-Type: application/octet-stream\r\n";
-                if (WinHttpSendRequest(hRequest,
-                    contentTypeHeader, (DWORD)-1L,
-                    data.data(), (DWORD)data.size(), (DWORD)data.size(), 0)) {
-                    
-                    if (WinHttpReceiveResponse(hRequest, NULL)) {
-                        sentCount++;
-                        if (sentCount % 50 == 0) {
-                            printf("[Stream] Sent %d %s frames successfully\n", sentCount, mediaType.c_str());
-                        }
-                    } else {
-                        printf("[Stream] WinHttpReceiveResponse failed for %s: %d\n", mediaType.c_str(), GetLastError());
+            std::lock_guard<std::mutex> lock(g_state.wsMutex);
+            if (g_state.hWebSocket && g_state.wsConnected) {
+                DWORD result = WinHttpWebSocketSend(g_state.hWebSocket,
+                    WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,
+                    (PVOID)wsPacket.data(), (DWORD)wsPacket.size());
+                
+                if (result == ERROR_SUCCESS) {
+                    sentCount++;
+                    if (sentCount % 100 == 0) {
+                        printf("[Stream] Sent %d %s binary packets via WS\n", sentCount, mediaType.c_str());
                     }
+                } else {
+                    printf("[Stream] WebSocket send binary failed for %s: %d\n", mediaType.c_str(), result);
+                    g_state.wsConnected = false;
                 }
-                else {
-                    printf("[Stream] WinHttpSendRequest failed for %s: %d\n", mediaType.c_str(), GetLastError());
-                }
-                WinHttpCloseHandle(hRequest);
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(mediaType == "mic" ? 20 : 100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(mediaType == "mic" ? 15 : 100));
     }
 
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
     if (SUCCEEDED(hrCoInit)) CoUninitialize();
     printf("[Stream] %s frame push loop ended (%d frames sent)\n", streamType.c_str(), sentCount);
 }
@@ -1911,6 +1915,13 @@ bool ConnectWebSocket(const std::string& deviceId, const std::string& deviceName
     if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
         printf("WinHttpSetOption failed: %d\n", GetLastError());
         return false;
+    }
+
+    if (Config::USE_SSL) {
+        DWORD securityFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+            SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+            SECURITY_FLAG_IGNORE_CERT_DATE_INVALID;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &securityFlags, sizeof(securityFlags));
     }
 
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,

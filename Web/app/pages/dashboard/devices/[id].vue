@@ -572,6 +572,7 @@ function connect() {
     ws.value = new WebSocket(
         `${useRuntimeConfig().public.websocket_url}/ws?type=client&id=${clientId}&userId=${userId}`,
     );
+    ws.value.binaryType = 'arraybuffer';
 
     ws.value.onopen = () => {
         status.value = "connected";
@@ -596,6 +597,25 @@ function connect() {
     };
 
     ws.value.onmessage = (event) => {
+        // Handle binary data (video/audio frames)
+        if (event.data instanceof ArrayBuffer) {
+            const buffer = event.data;
+            if (buffer.byteLength < 1) return;
+            const typeByte = new Uint8Array(buffer, 0, 1)[0];
+            const mediaData = buffer.slice(1);
+
+            if (typeByte === 0x01 || typeByte === 0x02) {
+                // Video frame (Screen or Cam)
+                if (displayedFrame.value) URL.revokeObjectURL(displayedFrame.value);
+                const blob = new Blob([mediaData], { type: 'image/jpeg' });
+                displayedFrame.value = URL.createObjectURL(blob);
+            } else if (typeByte === 0x03) {
+                // Audio chunk
+                handleIncomingAudio(mediaData);
+            }
+            return;
+        }
+
         try {
             const msg = JSON.parse(event.data);
             if (msg.type === "output") {
@@ -881,9 +901,10 @@ function formatSpeed(bytesPerSec: number) {
 }
 
 const streamRetryKey = ref(0);
-const videoStreamUrl = computed(() => {
-    if (!activeLiveVideo.value) return "";
-    return `/lynx/api/devices/${deviceId}/stream/video_down?type=${activeLiveVideo.value}&t=${streamRetryKey.value}`;
+const displayedFrame = ref<string>("");
+
+onUnmounted(() => {
+    if (displayedFrame.value) URL.revokeObjectURL(displayedFrame.value);
 });
 
 function refreshStream() {
@@ -942,67 +963,54 @@ function toggleMic() {
 }
 
 async function startAudioPlayback() {
-    const baseUrl = useRuntimeConfig().public.websocket_url.replace('wss://', 'https://').replace('ws://', 'http://');
-    const audioUrl = `${baseUrl}/api/devices/${deviceId}/stream/audio_down`;
-
-    audioAbortController = new AbortController();
-
-    try {
-        const ctx = new AudioContext({ sampleRate: 44100 });
-        audioCtx.value = ctx;
-        let nextStartTime = ctx.currentTime;
-
-        const response = await fetch(audioUrl, { signal: audioAbortController.signal });
-        if (!response.body) return;
-        const reader = response.body.getReader();
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (!value || value.byteLength < 2) continue;
-
-            // Convert PCM 16-bit signed LE mono to Float32
-            const sampleCount = Math.floor(value.byteLength / 2);
-            const int16 = new Int16Array(value.buffer, value.byteOffset, sampleCount);
-            const float32 = new Float32Array(sampleCount);
-            for (let i = 0; i < sampleCount; i++) {
-                float32[i] = int16[i]! / 32768;
-            }
-
-            const audioBuffer = ctx.createBuffer(1, float32.length, 44100);
-            audioBuffer.getChannelData(0).set(float32);
-
-            const source = ctx.createBufferSource();
-            source.buffer = audioBuffer;
-            
-            // Create gain node if not exists
-            if (!gainNode.value) {
-                gainNode.value = ctx.createGain();
-                gainNode.value.gain.value = volume.value;
-                gainNode.value.connect(ctx.destination);
-            }
-            
-            source.connect(gainNode.value);
-
-            const now = ctx.currentTime;
-            if (nextStartTime < now) nextStartTime = now;
-            source.start(nextStartTime);
-            nextStartTime += audioBuffer.duration;
-        }
-    } catch (e: any) {
-        if (e.name !== 'AbortError') {
-            console.error('Audio playback error:', e);
-        }
+    if (!audioCtx.value || audioCtx.value.state === 'closed') {
+        audioCtx.value = new AudioContext({ sampleRate: 44100 });
     }
+    if (audioCtx.value.state === 'suspended') {
+        await audioCtx.value.resume();
+    }
+    
+    if (!gainNode.value) {
+        gainNode.value = audioCtx.value.createGain();
+        gainNode.value.gain.value = volume.value;
+        gainNode.value.connect(audioCtx.value.destination);
+    }
+    
+    // Initial sync
+    lastAudioScheduleTime = 0;
+}
+
+let lastAudioScheduleTime = 0;
+const AUDIO_BUFFER_DELAY = 0.15; // 150ms jitter buffer
+
+function handleIncomingAudio(value: ArrayBuffer) {
+    if (!isMicOn.value || !audioCtx.value || audioCtx.value.state === 'suspended') return;
+
+    // Convert PCM 16-bit signed LE mono to Float32
+    const int16 = new Int16Array(value);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i]! / 32768;
+    }
+
+    const audioBuffer = audioCtx.value.createBuffer(1, float32.length, 44100);
+    audioBuffer.getChannelData(0).set(float32);
+
+    const source = audioCtx.value.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(gainNode.value!);
+
+    const now = audioCtx.value.currentTime;
+    if (lastAudioScheduleTime < now) {
+        lastAudioScheduleTime = now + AUDIO_BUFFER_DELAY;
+    }
+    
+    source.start(lastAudioScheduleTime);
+    lastAudioScheduleTime += audioBuffer.duration;
 }
 
 function stopAudioPlayback() {
-    audioAbortController?.abort();
-    audioAbortController = null;
     if (audioCtx.value) {
-        audioCtx.value.close();
-        audioCtx.value = null;
-        gainNode.value = null;
     }
 }
 
@@ -1745,11 +1753,10 @@ onBeforeUnmount(() => {
                         
                         <div v-else class="relative group w-full h-full flex items-center justify-center">
                             <img 
-                                :key="`${activeLiveVideo}-${streamRetryKey}`"
-                                :src="videoStreamUrl" 
+                                :key="`${activeLiveVideo}-frame`"
+                                :src="displayedFrame" 
                                 class="max-w-full max-h-full object-contain"
                                 alt="Live Stream"
-                                @error="refreshStream"
                             />
                             <div class="absolute bottom-2 right-2 flex flex-col items-end gap-1 pointer-events-none">
                                 <div v-if="activeLiveVideo" class="px-2 py-0.5 bg-black/60 rounded text-[10px] font-mono text-white flex items-center gap-2">
