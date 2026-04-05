@@ -2018,6 +2018,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine,
     printf("Auto-Restart: %s\n", Config::AUTO_RESTART_ON_CRASH ? "ON" : "OFF");
     printf("Max Reconnect Attempts: %s\n", Config::MAX_RECONNECT_ATTEMPTS == 0 ? "INFINITE" : std::to_string(Config::MAX_RECONNECT_ATTEMPTS).c_str());
 
+    // Enable DPI awareness to ensure screen capture gets full physical resolution
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     // Initialize GDI+
     GdiplusStartupInput gdiplusStartupInput;
     GdiplusStartup(&g_state.gdiplusToken, &gdiplusStartupInput, NULL);

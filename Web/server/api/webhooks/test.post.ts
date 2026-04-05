@@ -15,22 +15,40 @@ export default defineEventHandler(async (event) => {
     const body = await readBody(event);
     if (!body.url) {
         throw createError({
-            statusCode: 400,
+            statusCode: 422,
             statusMessage: "URL is required",
         });
     }
 
     try {
-        // Validate URL
         new URL(body.url);
+    } catch {
+        throw createError({
+            statusCode: 422,
+            statusMessage: "Invalid URL format",
+        });
+    }
 
-        const payload = {
-            event: "webhook.test",
-            timestamp: Date.now(),
-            message: "This is a test notification from Lynx RMM",
+    const payload = {
+        event: "device.connect",
+        timestamp: Date.now(),
+        device: {
+            id: "test-device-id",
             userId: session.user.id,
-        };
+            name: "DESKTOP-TEST01",
+            status: "offline",
+            lastSeen: new Date().toISOString(),
+            group: null,
+            tags: null,
+            os: "Windows 10 Enterprise",
+            version: "1.0.0",
+            createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+            updatedAt: new Date().toISOString(),
+            uptime: 168024062,
+        },
+    };
 
+    try {
         const response = await fetch(body.url, {
             method: "POST",
             headers: {

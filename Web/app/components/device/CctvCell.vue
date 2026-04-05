@@ -296,12 +296,12 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Video Area -->
-        <div class="flex-1 flex items-center justify-center relative overflow-hidden h-full min-h-[140px]">
+        <div class="flex-1 flex items-center justify-center relative bg-black/20 h-full min-h-[140px]">
             <img 
                 v-if="activeLiveVideo" 
                 :key="`${activeLiveVideo}-frame`"
                 :src="displayedFrame" 
-                class="w-full h-full object-contain"
+                class="max-w-full max-h-full object-contain shadow-2xl"
             />
             <div v-else class="flex flex-col items-center gap-2 text-neutral-700">
                 <UIcon name="i-heroicons-video-camera-slash" class="w-10 h-10" />
@@ -382,12 +382,12 @@ onBeforeUnmount(() => {
         <template #body>
             <div class="flex flex-col h-full gap-4">
                 <!-- Large Video Area -->
-                <div class="flex-1 bg-neutral-950 flex items-center justify-center relative overflow-hidden rounded-xl border border-neutral-800">
+                <div class="flex-1 bg-neutral-950 flex items-center justify-center relative overflow-hidden rounded-xl border border-neutral-800 p-2">
                     <img 
                         v-if="activeLiveVideo" 
                         :key="`expanded-${activeLiveVideo}-frame`"
                         :src="displayedFrame" 
-                        class="w-full h-full object-contain"
+                        class="max-w-full max-h-full object-contain drop-shadow-2xl"
                     />
                     <div v-else class="flex flex-col items-center gap-4 text-neutral-800">
                         <UIcon name="i-heroicons-video-camera-slash" class="w-20 h-20 opacity-10" />
