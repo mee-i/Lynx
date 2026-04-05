@@ -23,6 +23,11 @@ const items: NavigationMenuItem[] = [
         to: "/dashboard/audit-logs",
     },
     {
+        label: "Webhooks",
+        icon: "i-material-symbols-webhook",
+        to: "/dashboard/webhooks",
+    },
+    {
         label: "Logout",
         icon: "i-material-symbols-admin",
         to: "/logout",

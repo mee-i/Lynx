@@ -62,10 +62,22 @@ export const auditLog = sqliteTable("audit_log", {
   timestamp: integer("timestamp", { mode: "timestamp_ms" }).notNull(),
 });
 
+export const webhooks = sqliteTable("webhook", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: text("user_id").notNull(),
+  url: text("url").notNull(),
+  events: text("events", { mode: "json" }).$type<string[]>().notNull(),
+  isEnabled: integer("is_enabled", { mode: "boolean" }).default(true).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export type Device = typeof devices.$inferSelect;
 export type NewDevice = typeof devices.$inferInsert;
 export type DeviceLog = typeof deviceLogs.$inferSelect;
 export type NewDeviceLog = typeof deviceLogs.$inferInsert;
 export type AuditLog = typeof auditLog.$inferSelect;
 export type NewAuditLog = typeof auditLog.$inferInsert;
+export type Webhook = typeof webhooks.$inferSelect;
+export type NewWebhook = typeof webhooks.$inferInsert;
 

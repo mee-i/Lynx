@@ -145,6 +145,7 @@ export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
   accounts: many(account),
   devices: many(devices),
+  webhooks: many(webhooks),
 }));
 
 export const deviceMetrics = sqliteTable("device_metrics", {
@@ -209,4 +210,25 @@ export const accountRelations = relations(account, ({ one }) => ({
   }),
 }));
 
+export const webhooks = sqliteTable("webhook", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  events: text("events", { mode: "json" }).$type<string[]>().notNull(),
+  isEnabled: integer("is_enabled", { mode: "boolean" }).default(true).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+    .notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+    .notNull(),
+});
 
+export const webhooksRelations = relations(webhooks, ({ one }) => ({
+  user: one(user, {
+    fields: [webhooks.userId],
+    references: [user.id],
+  }),
+}));

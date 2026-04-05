@@ -8,6 +8,7 @@ import {
     deviceMetrics,
     sessions,
     auditLog,
+    webhooks,
     type Device,
 } from "./db";
 import { eq, and, gt, sql, inArray } from "drizzle-orm";
@@ -97,6 +98,55 @@ async function logDeviceEvent(
     }
 }
 
+// Trigger Webhooks
+async function triggerWebhooks(
+    userId: string,
+    event: "device.connect" | "device.disconnect",
+    deviceData: any,
+) {
+    try {
+        const hooks = db
+            .select()
+            .from(webhooks)
+            .where(
+                and(
+                    eq(webhooks.userId, userId),
+                    eq(webhooks.isEnabled, true),
+                ),
+            )
+            .all();
+
+        for (const hook of hooks) {
+            const events = hook.events;
+            if (events.includes(event)) {
+                try {
+                    // Basic URL validation
+                    new URL(hook.url);
+
+                    console.log(`[webhook] Triggering for ${hook.url} (${event})`);
+                    fetch(hook.url, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            event,
+                            timestamp: Date.now(),
+                            device: deviceData,
+                        }),
+                    }).catch((err) => {
+                        console.error(`[webhook] Request to ${hook.url} failed:`, err);
+                    });
+                } catch (urlErr) {
+                    console.error(`[webhook] Invalid URL for hook ${hook.id}: ${hook.url}`);
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Failed to trigger webhooks:", e);
+    }
+}
+
 // Upsert device to SQLite
 async function upsertDevice(
     device: Partial<Device> & { id: string; userId?: string | null },
@@ -116,6 +166,12 @@ async function upsertDevice(
                 })
                 .where(eq(devices.id, device.id))
                 .run();
+                
+            // Update in-memory registry
+            const reg = deviceRegistry.get(device.id);
+            if (reg) {
+                deviceRegistry.set(device.id, { ...reg, ...device, updatedAt: new Date() });
+            }
         } else {
             // Use provided userId or fallback to the first user found in the DB
             let targetUserId = device.userId;
@@ -144,6 +200,13 @@ async function upsertDevice(
                         updatedAt: new Date(),
                     })
                     .run();
+                    
+                // Update in-memory registry
+                const allDevices = db.select().from(devices).where(eq(devices.id, device.id)).get();
+                if (allDevices) {
+                    deviceRegistry.set(device.id, { ...allDevices, status: device.status || "offline" });
+                }
+                
                 console.log(
                     `[device] Registered ${device.id} to user ${targetUserId}`,
                 );
@@ -634,6 +697,9 @@ if (success) return undefined;
                 const wasOffline = !deviceRegistry.get(id) || deviceRegistry.get(id)?.status === "offline";
                 deviceRegistry.set(id, { ...finalDevice, status: "online" });
                 await logDeviceEvent(id, wasOffline ? "connect" : "reconnect");
+                
+                // Trigger Webhook on any connection (connect or reconnect)
+                await triggerWebhooks(finalDevice.userId, "device.connect", { ...finalDevice, status: "online" });
 
                 const subs = subscriptions.get(id);
                 if (subs) {
@@ -750,8 +816,18 @@ if (success) return undefined;
 
             if (type === "device") {
                 deviceSockets.delete(id);
+                const device = db.select().from(devices).where(eq(devices.id, id)).get();
+                if (device) {
+                    await triggerWebhooks(device.userId, "device.disconnect", { ...device, status: "offline" });
+                }
+                
+                // Update registry to offline immediately
+                const reg = deviceRegistry.get(id);
+                if (reg) {
+                    deviceRegistry.set(id, { ...reg, status: "offline", lastSeen: new Date() });
+                }
+
                 upsertDevice({ id, status: "offline", lastSeen: new Date() });
-                subscriptions.get(id)?.forEach(c => c.send(JSON.stringify({ type: "status", status: "offline", deviceId: id })));
             } else if (type === "client") {
                 const targetDeviceId = ws.data.deviceId;
                 if (targetDeviceId) subscriptions.get(targetDeviceId)?.delete(ws);
