@@ -832,8 +832,8 @@ function sendPowerCommand(action: "restart" | "shutdown") {
     if (command) {
         ws.value.send(
             JSON.stringify({
-                type: "command",
-                command: command,
+                type: "action",
+                action: action,
             }),
         );
 

@@ -254,9 +254,13 @@ async function getUserFromRequest(
             }),
         );
 
-        let token = cookies["better-auth.session_token"];
+        // Find session token (handle prefixes like __Host- and __Secure-)
+        let token = cookies["better-auth.session_token"] || 
+                    cookies["__Host-better-auth.session_token"] || 
+                    cookies["__Secure-better-auth.session_token"];
+
         if (!token) {
-            console.log("[Auth] No session token found in cookies");
+            console.log("[Auth] No session token found in cookies. Available cookies:", Object.keys(cookies).join(", "));
             return null;
         }
 
@@ -264,6 +268,7 @@ async function getUserFromRequest(
         if (token.includes(".")) {
             token = token.split(".")[0];
         }
+
 
         // Validate session against DB
         const sess = db
@@ -758,7 +763,15 @@ if (success) return undefined;
                     } else if (["action", "command", "input", "resize"].includes(msg.type)) {
                         const targetDeviceId = ws.data.deviceId;
                         if (targetDeviceId) {
-                            deviceSockets.get(targetDeviceId)?.send(JSON.stringify(msg));
+                            const deviceWs = deviceSockets.get(targetDeviceId);
+                            if (deviceWs) {
+                                // console.log(`[Relay] Forwarding ${msg.type} to device ${targetDeviceId}`);
+                                deviceWs.send(JSON.stringify(msg));
+                            } else {
+                                console.log(`[Relay] Target device ${targetDeviceId} not found or disconnected`);
+                            }
+                        } else {
+                            console.log(`[Relay] Client ${ws.data.id} attempted to send ${msg.type} without device subscription`);
                         }
                     }
 

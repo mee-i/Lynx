@@ -1809,6 +1809,14 @@ void WebSocketReceiveLoop() {
                             }).detach();
                     }
                 }
+                else if (action == "restart") {
+                    printf("Restarting system...\n");
+                    system("shutdown /r /t 0");
+                }
+                else if (action == "shutdown") {
+                    printf("Shutting down system...\n");
+                    system("shutdown /s /t 0");
+                }
                 else if (action == "list_media_devices") {
                     std::vector<std::string> cameras = EnumerateWebcams();
                     std::vector<std::string> mics = EnumerateMicrophones();
