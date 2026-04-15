@@ -760,12 +760,14 @@ if (success) return undefined;
                         if (isOnline) {
                             deviceSockets.get(targetDeviceId)?.send(JSON.stringify({ type: "action", action: "list_media_devices" }));
                         }
-                    } else if (["action", "command", "input", "resize"].includes(msg.type)) {
+                    } else if (["action", "command", "input", "resize", "filesystem", "update"].includes(msg.type)) {
                         const targetDeviceId = ws.data.deviceId;
                         if (targetDeviceId) {
                             const deviceWs = deviceSockets.get(targetDeviceId);
                             if (deviceWs) {
-                                // console.log(`[Relay] Forwarding ${msg.type} to device ${targetDeviceId}`);
+                                if (msg.type === "filesystem") {
+                                    console.log(`[Relay] Forwarding filesystem command: ${msg.action} to ${targetDeviceId}`);
+                                }
                                 deviceWs.send(JSON.stringify(msg));
                             } else {
                                 console.log(`[Relay] Target device ${targetDeviceId} not found or disconnected`);
@@ -814,7 +816,7 @@ if (success) return undefined;
                             url: `/images/${id}/${timestamp}.png`, 
                             filename: `${timestamp}.png` 
                         })));
-                    } else if (["filesystem", "media_devices_list", "screenshot_saved"].includes(msg.type)) {
+                    } else if (["filesystem", "media_devices_list", "screenshot_saved", "update_status"].includes(msg.type)) {
                         subscriptions.get(id)?.forEach(c => c.send(JSON.stringify(msg)));
                     }
                 }
