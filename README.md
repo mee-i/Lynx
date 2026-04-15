@@ -36,7 +36,7 @@ graph TD
     end
 
     User <-->|Manage| Dashboard
-    Dashboard <-->|WebSockets / HTTP| Server
+    Dashboard <-->|Secure WebSockets / HTTP(S)| Server
     Server <-->|Query/Sync| DB
     Server --- Logs
 
