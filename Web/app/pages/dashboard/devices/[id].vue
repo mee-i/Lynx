@@ -1093,7 +1093,7 @@ onBeforeUnmount(() => {
                     @click="deleteModalOpen = true"
                     >Delete</UButton
                 >
-                <UDropdown
+                <UDropdownMenu
                     :items="powerItems"
                     :popper="{ placement: 'bottom-end' }"
                 >
@@ -1105,7 +1105,7 @@ onBeforeUnmount(() => {
                         :disabled="device?.status !== 'online'"
                         >Power</UButton
                     >
-                </UDropdown>
+                </UDropdownMenu>
             </div>
         </div>
 
